@@ -59,12 +59,17 @@ class RobotEventClient:
         self._velocity_state: dict = {
             "cms": 0.0, "ms": 0.0, "method": "zeroed", "timestamp": 0.0,
         }
+        self._obstacle_state: dict = {
+            "detected": False, "distance_cm": float("inf"),
+            "threshold_cm": 15.0, "timestamp": 0.0,
+        }
         self._server_status: dict | None = None
         self._connected = threading.Event()
 
         # User callbacks (set by caller)
         self.on_collision = None  # Callable[[dict], None]
         self.on_velocity = None   # Callable[[dict], None]
+        self.on_obstacle = None   # Callable[[dict], None]
         self.on_imu = None        # Callable[[dict], None]
 
         # Internal
@@ -111,6 +116,11 @@ class RobotEventClient:
     def velocity(self) -> dict:
         with self._lock:
             return self._velocity_state.copy()
+
+    @property
+    def obstacle_state(self) -> dict:
+        with self._lock:
+            return self._obstacle_state.copy()
 
     @property
     def is_connected(self) -> bool:
@@ -169,6 +179,15 @@ class RobotEventClient:
                 except Exception:
                     pass
 
+        elif msg_type == "obstacle_update":
+            with self._lock:
+                self._obstacle_state = {**data, "timestamp": ts}
+            if self.on_obstacle is not None:
+                try:
+                    self.on_obstacle({**data, "timestamp": ts})
+                except Exception:
+                    pass
+
         elif msg_type == "server_status":
             with self._lock:
                 self._server_status = data
@@ -212,8 +231,13 @@ class StubEventClient:
         "threshold_cm": 15.0, "timestamp": 0.0,
     }
     velocity = {"cms": 0.0, "ms": 0.0, "method": "zeroed", "timestamp": 0.0}
+    obstacle_state = {
+        "detected": False, "distance_cm": float("inf"),
+        "threshold_cm": 15.0, "timestamp": 0.0,
+    }
     on_collision = None
     on_velocity = None
+    on_obstacle = None
     on_imu = None
 
     def start(self):

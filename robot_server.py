@@ -289,8 +289,10 @@ def _imu_callback(msg):
             mg = msg.mag
             with _imu_lock:
                 imu_data['magnetic'] = {'x': mg[0], 'y': mg[1], 'z': mg[2]}
+        else:
+            return
 
-        # Publish full snapshot on every message type
+        # Publish full snapshot on every recognized message type
         snapshot = get_imu_snapshot()
         ws_publish("imu_sample", snapshot)
     except Exception as e:
@@ -789,7 +791,7 @@ def run_server():
     print(f"    obstacle-daemon  @ {OBSTACLE_POLL_HZ} Hz")
     print(f"    velocity-daemon  @ {VEL_ESTIMATOR_HZ} Hz  (a={COMPLEMENTARY_ALPHA})")
     print(f"    ws-daemon        @ ws://{WS_HOST}:{WS_PORT}"
-          + ("  (events: imu_sample, collision_event, velocity_update)" if WEBSOCKETS_AVAILABLE else "  ✗ DISABLED"))
+          + ("  (events: imu_sample, collision_event, velocity_update, obstacle_update)" if WEBSOCKETS_AVAILABLE else "  ✗ DISABLED"))
     print(f"{'='*62}\n")
 
     try:

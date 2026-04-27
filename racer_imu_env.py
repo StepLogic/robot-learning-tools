@@ -327,6 +327,7 @@ class RacerEnv(gym.Env):
             "imu_samples_between_frames": imu_samples,   # For SLAM preintegration
             "collision_from_event": self.event_client.collision_detected,  # ~10ms latency
             "velocity_event": self.event_client.velocity,
+            "obstacle_state_event": self.event_client.obstacle_state,  # continuous proximity at 10Hz
         }
 
     def reset(self, seed=None, options=None):

@@ -826,6 +826,15 @@ def main():
                 # Immediately stop motors
                 steering, throttle = 0.0, 0.0
 
+            # Proactive braking: reduce throttle when approaching obstacle
+            obs_state = event_client.obstacle_state
+            if obs_state["distance_cm"] < 40.0 and obs_state["distance_cm"] > 0:
+                proximity_factor = max(0.3, obs_state["distance_cm"] / 40.0)
+                throttle *= proximity_factor
+                if obs_state["distance_cm"] < 25.0:
+                    print(f"  ⚠ PROXIMITY | dist={obs_state['distance_cm']:.1f}cm "
+                          f"throttle={throttle:.3f}")
+
             # FPS
             now = time.time()
             fps = 0.9 * fps + 0.1 / max(now - last_time, 0.001)

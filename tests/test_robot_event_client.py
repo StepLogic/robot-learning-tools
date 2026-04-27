@@ -82,6 +82,13 @@ def mock_server(ws_port):
             "data": {"cms": 15.0, "ms": 0.15, "method": "fused"},
         }))
 
+        # Send an obstacle update
+        await websocket.send(json.dumps({
+            "type": "obstacle_update",
+            "ts": time.time(),
+            "data": {"detected": False, "distance_cm": 45.3, "threshold_cm": 15.0},
+        }))
+
         # Keep connection open briefly to allow client to receive all messages
         await asyncio.sleep(0.5)
 
@@ -306,6 +313,47 @@ class TestRobotEventClient:
         t.join(timeout=2.0)
 
 
+class TestObstacleUpdate:
+    """Tests for obstacle_update event handling."""
+
+    def test_obstacle_state_property(self, mock_server):
+        """obstacle_state should reflect obstacle_update messages."""
+        if not WEBSOCKETS_AVAILABLE:
+            pytest.skip("websockets library not installed")
+        client = RobotEventClient(host="127.0.0.1", ws_port=mock_server,
+                                  reconnect_interval=0.5)
+        client.start()
+        time.sleep(0.5)
+
+        state = client.obstacle_state
+        assert state["detected"] is False
+        assert state["distance_cm"] == 45.3
+        assert state["threshold_cm"] == 15.0
+        assert "timestamp" in state
+
+        client.stop()
+
+    def test_obstacle_callback(self, mock_server):
+        """on_obstacle callback should fire on obstacle_update."""
+        if not WEBSOCKETS_AVAILABLE:
+            pytest.skip("websockets library not installed")
+        client = RobotEventClient(host="127.0.0.1", ws_port=mock_server,
+                                  reconnect_interval=0.5)
+        received = []
+
+        def callback(event):
+            received.append(event)
+
+        client.on_obstacle = callback
+        client.start()
+        time.sleep(0.5)
+
+        assert len(received) >= 1, "obstacle_update callback should have fired"
+        assert received[0]["distance_cm"] == 45.3
+
+        client.stop()
+
+
 class TestStubEventClient:
     """Tests for StubEventClient (offline/fallback)."""
 
@@ -314,6 +362,7 @@ class TestStubEventClient:
         assert client.collision_detected is False
         assert client.collision_info["detected"] is False
         assert client.velocity["cms"] == 0.0
+        assert client.obstacle_state["detected"] is False
         assert client.is_connected is False
 
     def test_stub_methods(self):
@@ -326,6 +375,19 @@ class TestStubEventClient:
         assert client.on_collision is None
         assert client.on_velocity is None
         assert client.on_imu is None
+        assert client.on_obstacle is None
+
+    def test_stub_obstacle_state_structure(self):
+        """StubEventClient obstacle_state should match expected structure."""
+        client = StubEventClient()
+        state = client.obstacle_state
+        assert "detected" in state
+        assert "distance_cm" in state
+        assert "threshold_cm" in state
+        assert "timestamp" in state
+        assert state["detected"] is False
+        assert state["distance_cm"] == float("inf")
+        assert state["threshold_cm"] == 15.0
 
 
 class TestModuleLevel:
