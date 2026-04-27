@@ -252,7 +252,6 @@ else:
 def _imu_callback(msg):
     global _last_accel_time
     try:
-        should_publish = False
         if isinstance(msg, witmotion.protocol.AccelerationMessage):
             ax, ay, az = msg.a
             now = time.time()
@@ -261,7 +260,7 @@ def _imu_callback(msg):
                     _last_accel_time = now
                 dt = now - _last_accel_time
                 _last_accel_time = now
-                r = math.sqrt(ax*ax + ay*ay + az*az)
+                r = math.sqrt(ax*ax + ay*ay + az*asz)
                 imu_data['acceleration'] = {'x': ax, 'y': ay, 'z': az, 'resultant': r}
                 vx = imu_data['velocity']['x'] + ax * dt
                 vy = imu_data['velocity']['y'] + ay * dt
@@ -271,7 +270,6 @@ def _imu_callback(msg):
                     'speed': math.sqrt(vx*vx + vy*vy + vz*vz)
                 }
                 imu_data['forward_velocity'] += ax * dt
-                should_publish = True
 
         elif isinstance(msg, witmotion.protocol.AngularVelocityMessage):
             w = msg.w
@@ -292,11 +290,11 @@ def _imu_callback(msg):
             with _imu_lock:
                 imu_data['magnetic'] = {'x': mg[0], 'y': mg[1], 'z': mg[2]}
 
-        if should_publish:
-            snapshot = get_imu_snapshot()
-            ws_publish("imu_sample", snapshot)
-    except Exception:
-        pass
+        # Publish full snapshot on every message type
+        snapshot = get_imu_snapshot()
+        ws_publish("imu_sample", snapshot)
+    except Exception as e:
+        print(f"IMU callback error: {e}")
 
 
 def _imu_zero_velocity():

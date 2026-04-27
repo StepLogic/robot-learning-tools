@@ -23,12 +23,35 @@
 # ==============================================================================
 ENV_NAME="habitat"
 
+# ── Habitat-Sim GPU rendering on headless nodes ──────────────────────────────
+# Habitat-Sim uses EGL for headless GPU rendering. Without these env vars,
+# _config_backend segfaults because it cannot find the NVIDIA EGL ICD.
+export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
+export HABITAT_SIM_GPU_DEVICE_ID=0
+
 echo "============================================"
 echo "Job ID       : $SLURM_JOB_ID"
 echo "Node         : $(hostname)"
 echo "GPU          : $CUDA_VISIBLE_DEVICES"
 echo "Start time   : $(date)"
 echo "============================================"
+
+# ── GPU diagnostics ──────────────────────────────────────────────────────────
+nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null \
+    || echo "WARNING: nvidia-smi failed — GPU may not be visible"
+
+# ── Verify EGL ICD file exists ──────────────────────────────────────────────
+if [ ! -f "$__EGL_VENDOR_LIBRARY_FILENAMES" ]; then
+    echo "WARNING: EGL ICD file not found at $__EGL_VENDOR_LIBRARY_FILENAMES"
+    echo "Searching for alternative NVIDIA EGL ICD..."
+    ALT=$(find /usr -name "10_nvidia.json" 2>/dev/null | head -1)
+    if [ -n "$ALT" ]; then
+        echo "Found: $ALT"
+        export __EGL_VENDOR_LIBRARY_FILENAMES="$ALT"
+    else
+        echo "ERROR: No NVIDIA EGL ICD found. Habitat-Sim will likely segfault."
+    fi
+fi
 
 module load anaconda3
 $INIT_CONDA
