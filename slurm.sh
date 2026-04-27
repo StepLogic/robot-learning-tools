@@ -64,6 +64,9 @@ mkdir -p logs
 # Start training : 10K (2x default — let buffer fill before updates)
 # ==============================================================================
 export PYOPENGL_PLATFORM=egl
+export MAGNUM_LOG=quiet  
+unset DISPLAY
+
 python train_habitat_her.py \
     --replay_buffer_size 1000000 \
     --max_steps 5000000 \
