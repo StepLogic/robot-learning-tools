@@ -190,9 +190,9 @@ class HabitatRewardWrapper(gym.Wrapper):
             terminated = True
 
         # # # Collision penalty
-        # if info.get("hit", False):
-        #     # reward -= self.k_collision
-        #     terminated = True
+        if info.get("hit", False):
+            # reward -= self.k_collision
+            terminated = True
 
         # Steering penalty (encourages straighter paths)
         # reward -= self.k_steering * abs(action[0])
@@ -242,41 +242,72 @@ def _find_latest_checkpoint(folder):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class VideoRecorder(gym.Wrapper):
-    """Records episode frames and writes MP4 videos to disk."""
+    """Records episode frames and writes MP4 videos to disk.
 
-    def __init__(self, env, video_dir: str, fps: int = 30):
+    Supports two modes:
+      - Step-interval: start/stop recording at fixed step intervals
+        (controlled externally via start_recording / stop_and_save).
+      - Episode: automatically record complete episodes when
+        record_episodes=True, saving on termination.
+
+    In headless (rgb_array) mode, captures the raw RGB observation.
+    In human-render mode, captures the composed debug view.
+    """
+
+    def __init__(self, env, video_dir: str, fps: int = 30,
+                 record_episodes: bool = False):
         super().__init__(env)
         self.video_dir = video_dir
         self.fps = fps
+        self.record_episodes = record_episodes
         os.makedirs(video_dir, exist_ok=True)
+        self._recording = False
         self._frames = []
+        self._episode_count = 0
 
     def start_recording(self):
+        self._recording = True
         self._frames = []
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
-        if self._frames is not None and len(self._frames) < 2000:
+        if self._recording and len(self._frames) < 3000:
             frame = self._get_display_frame(obs, info)
             if frame is not None:
                 self._frames.append(frame)
+        if (self.record_episodes and self._recording
+                and (terminated or truncated)):
+            self._episode_count += 1
+            self.save(f"episode_{self._episode_count:04d}.mp4")
+            self._frames = []
         return obs, reward, terminated, truncated, info
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        if self._frames is not None and len(self._frames) < 2000:
+        if self._recording and len(self._frames) < 3000:
             frame = self._get_display_frame(obs, info)
             if frame is not None:
                 self._frames.append(frame)
         return obs, info
 
     def _get_display_frame(self, obs, info):
-        raw = self.env.unwrapped.render()
-        if raw is not None:
-            if raw.ndim == 3 and raw.shape[2] == 4:
-                raw = raw[:, :, :3]
-            # raw is RGB from HabitatNavEnv
-            return raw
+        try:
+            raw = self.env.unwrapped.render()
+            if raw is not None:
+                if raw.ndim == 3 and raw.shape[2] == 4:
+                    raw = raw[:, :, :3]
+                return raw
+        except Exception:
+            pass
+        # Fallback: reconstruct from observation if render() fails
+        pixels = obs.get("pixels", None) if isinstance(obs, dict) else None
+        if pixels is not None and isinstance(pixels, np.ndarray):
+            if pixels.ndim == 3 and pixels.shape[-1] in (1, 3, 4):
+                vis = (pixels[:, :, :3] * 255).astype(np.uint8)
+                h, w = vis.shape[:2]
+                vis = cv2.resize(vis, (w * 4, h * 4),
+                                 interpolation=cv2.INTER_NEAREST)
+                return vis
         return None
 
     def save(self, filename: str):
@@ -293,7 +324,8 @@ class VideoRecorder(gym.Wrapper):
 
     def stop_and_save(self, filename: str):
         self.save(filename)
-        self._frames = None
+        self._recording = False
+        self._frames = []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
