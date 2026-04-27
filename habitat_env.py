@@ -43,7 +43,6 @@ logger = logging.getLogger(__name__)
 # try:
 import habitat
 from habitat import Env as HabitatEnv
-from habitat.core.env import RLEnv
 from habitat.config.default import get_config as get_habitat_config
 from habitat.config.default_structured_configs import (
     VelocityControlActionConfig,
@@ -168,9 +167,9 @@ def _build_habitat_config(cfg: HabitatNavConfig) -> "OmegaConf.DictConfig":
 # HabitatNavEnv
 # ============================================================================
 
-class HabitatNavEnv(RLEnv):
+class HabitatNavEnv(gym.Env):
     """
-    RLEnv subclass wrapping habitat-lab for image-goal navigation.
+    Gymnasium environment wrapping habitat-lab for image-goal navigation.
 
     Uses habitat.Env for simulator management, ImageGoalSensor for goal
     rendering, DistanceToGoal for geodesic distance, and Collisions for
@@ -207,7 +206,7 @@ class HabitatNavEnv(RLEnv):
 
         # Create placeholder dataset with one episode.
         # Start and goal are 1m apart so SPL's _start_end_episode_distance
-        # is non-zero during RLEnv.__init__ (avoids ZeroDivisionError).
+        # is non-zero during env init (avoids ZeroDivisionError).
         self._dataset = PointNavDatasetV1()
         self._dataset.episodes = [
             NavigationEpisode(
@@ -219,15 +218,15 @@ class HabitatNavEnv(RLEnv):
             )
         ]
 
-        # Initialize RLEnv (creates self._env = habitat.Env internally)
-        super().__init__(hab_cfg, self._dataset)
+        # Create habitat.Env directly (composition, not RLEnv inheritance)
+        self._env = HabitatEnv(hab_cfg, dataset=self._dataset)
         self._sim = self._env._sim
         self._pathfinder = self._sim.pathfinder
         self._rng = np.random.default_rng(self._cfg.seed)
         self._scene_paths = self._cfg.get_scene_paths()
         self._current_scene = self._cfg.scene_path
 
-        # Override RLEnv's spaces with our own (RLEnv sets them from habitat task)
+        # Define observation and action spaces
         H, W = self._cfg.image_height, self._cfg.image_width
         self.observation_space = spaces.Dict({
             "image": spaces.Box(low=0, high=255, shape=(H, W, 3), dtype=np.uint8),
@@ -794,59 +793,8 @@ class HabitatNavEnv(RLEnv):
         cv2.imshow("HabitatNav", combined)
         cv2.waitKey(1)
 
-    # ── RLEnv abstract method implementations ───────────────────────────────
-
-    def get_reward_range(self):
-        return (-float("inf"), float("inf"))
-
-    def get_reward(self, observations):
-        return float(self._get_habitat_metrics().get("distance_to_goal_reward", 0.0))
-
-    def get_done(self, observations):
-        return False  # Done is handled by HabitatRewardWrapper
-
-    def get_info(self, observations):
-        return self._get_info()
-
     def close(self):
         cv2.destroyAllWindows()
         if hasattr(self, '_env') and self._env is not None:
             self._env.close()
             self._env = None
-
-
-# ============================================================================
-# Gymnasium compatibility wrapper
-# ============================================================================
-
-class GymnasiumHabitatNav(gym.Env):
-    """Wraps HabitatNavEnv (RLEnv) as a gymnasium.Env.
-
-    RLEnv inherits from gym.core.Env (old gym) and returns the 4-tuple
-    (obs, reward, done, info). This wrapper converts it to the gymnasium
-    5-tuple (obs, reward, terminated, truncated, info).
-    """
-
-    metadata = {"render_modes": ["human", "rgb_array"]}
-
-    def __init__(self, config: Optional[HabitatNavConfig] = None,
-                 render_mode: str = "rgb_array"):
-        super().__init__()
-        self._rl_env = HabitatNavEnv(config=config, render_mode=render_mode)
-        self.observation_space = self._rl_env.observation_space
-        self.action_space = self._rl_env.action_space
-        self.render_mode = render_mode
-
-    def reset(self, seed=None, options=None):
-        obs, info = self._rl_env.reset()
-        return obs, info
-
-    def step(self, action):
-        obs, reward, terminated, truncated, info = self._rl_env.step(action)
-        return obs, reward, terminated, truncated, info
-
-    def render(self):
-        return self._rl_env.render()
-
-    def close(self):
-        self._rl_env.close()

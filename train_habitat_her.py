@@ -36,7 +36,7 @@ from jaxrl2.noise import OrnsteinUhlenbeckActionNoise
 from jaxrl2.wrappers.record_statistics import RecordEpisodeStatistics
 from jaxrl2.wrappers.timelimit import TimeLimit
 
-from habitat_env import HabitatNavEnv, GymnasiumHabitatNav, HAS_HABITAT_LAB
+from habitat_env import HabitatNavEnv, HAS_HABITAT_LAB
 from configs.habitat_config import HabitatNavConfig
 from racer_imu_env import StackingWrapper
 from wrappers import (
@@ -366,7 +366,7 @@ def main(_):
     if FLAGS.randomize_scenes:
         print(f"Scene randomization: {len(habitat_cfg.get_scene_paths())} scenes available")
 
-    EnvClass = GymnasiumHabitatNav
+    EnvClass = HabitatNavEnv
     render_mode = "human" if FLAGS.debug_render else "rgb_array"
     env = EnvClass(config=habitat_cfg, render_mode=render_mode)
     # env = EnvCompatibility(env)

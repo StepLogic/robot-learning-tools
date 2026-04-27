@@ -90,22 +90,22 @@ class TestHabitatRewardWrapper:
 @pytest.mark.skipif(not HAS_HABITAT_LAB, reason="habitat_lab not installed")
 class TestHabitatNavEnv:
     def test_import_and_creation(self):
-        from habitat_env import HabitatNavEnv, GymnasiumHabitatNav
+        from habitat_env import HabitatNavEnv
         cfg = HabitatNavConfig(
             scene_path="data/gibson/Cantwell.glb",
             image_height=120, image_width=160, seed=42,
         )
-        env = GymnasiumHabitatNav(config=cfg)
+        env = HabitatNavEnv(config=cfg)
         assert env is not None
         env.close()
 
     def test_reset_and_step(self):
-        from habitat_env import GymnasiumHabitatNav
+        from habitat_env import HabitatNavEnv
         cfg = HabitatNavConfig(
             scene_path="data/gibson/Cantwell.glb",
             image_height=120, image_width=160, seed=42,
         )
-        env = GymnasiumHabitatNav(config=cfg)
+        env = HabitatNavEnv(config=cfg)
         obs, info = env.reset()
         assert obs["image"].shape == (120, 160, 3)
         assert obs["imu"].shape == (6,)
@@ -114,12 +114,12 @@ class TestHabitatNavEnv:
         env.close()
 
     def test_actual_vel_in_info(self):
-        from habitat_env import GymnasiumHabitatNav
+        from habitat_env import HabitatNavEnv
         cfg = HabitatNavConfig(
             scene_path="data/gibson/Cantwell.glb",
             image_height=120, image_width=160, seed=42,
         )
-        env = GymnasiumHabitatNav(config=cfg)
+        env = HabitatNavEnv(config=cfg)
         env.reset()
         action = np.array([0.0, 0.5], dtype=np.float32)
         _, _, _, _, info = env.step(action)
