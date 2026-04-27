@@ -260,7 +260,7 @@ def _imu_callback(msg):
                     _last_accel_time = now
                 dt = now - _last_accel_time
                 _last_accel_time = now
-                r = math.sqrt(ax*ax + ay*ay + az*asz)
+                r = math.sqrt(ax*ax + ay*ay + az*az)
                 imu_data['acceleration'] = {'x': ax, 'y': ay, 'z': az, 'resultant': r}
                 vx = imu_data['velocity']['x'] + ax * dt
                 vy = imu_data['velocity']['y'] + ay * dt
@@ -348,6 +348,13 @@ def start_obstacle_daemon():
                 with _obstacle_lock:
                     _obstacle_state['detected']    = detected
                     _obstacle_state['distance_cm'] = round(dist_cm, 2)
+
+                # Publish continuous proximity data every cycle
+                ws_publish("obstacle_update", {
+                    "detected":    detected,
+                    "distance_cm": round(dist_cm, 2),
+                    "threshold_cm": OBSTACLE_THRESHOLD_CM,
+                })
 
                 # Push collision event on state transition
                 if detected != _prev_detected[0]:

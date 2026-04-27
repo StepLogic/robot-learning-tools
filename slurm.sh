@@ -17,17 +17,12 @@
 #SBATCH --time=96:00:00
 #SBATCH --gres=gpu:l40:1
 #SBATCH --output=logs/habitat_her_%j.log
-
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/home/egyaase/robot-learning-tools/NVIDIA-Linux-x86_64-545.23.06"
 # ==============================================================================
 # Environment Setup
 # ==============================================================================
 ENV_NAME="habitat"
 
-# ── Habitat-Sim GPU rendering on headless nodes ──────────────────────────────
-# Habitat-Sim uses EGL for headless GPU rendering. Without these env vars,
-# _config_backend segfaults because it cannot find the NVIDIA EGL ICD.
-export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
-export HABITAT_SIM_GPU_DEVICE_ID=0
 
 echo "============================================"
 echo "Job ID       : $SLURM_JOB_ID"
