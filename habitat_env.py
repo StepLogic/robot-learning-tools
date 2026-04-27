@@ -40,22 +40,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Try importing habitat-lab — set a flag so we can provide a dummy fallback.
 # ---------------------------------------------------------------------------
-try:
-    import habitat
-    from habitat import Env as HabitatEnv
-    from habitat.core.env import RLEnv
-    from habitat.config.default import get_config as get_habitat_config
-    from habitat.config.default_structured_configs import (
-        VelocityControlActionConfig,
-    )
-    from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
-    from habitat.tasks.nav.nav import NavigationEpisode, NavigationGoal
-    import habitat_sim
-    import magnum as mn
-    HAS_HABITAT_LAB = True
-except ImportError:
-    HAS_HABITAT_LAB = False
-    logger.warning("habitat-lab not installed — HabitatNavEnv will not be usable.")
+# try:
+import habitat
+from habitat import Env as HabitatEnv
+from habitat.core.env import RLEnv
+from habitat.config.default import get_config as get_habitat_config
+from habitat.config.default_structured_configs import (
+    VelocityControlActionConfig,
+)
+from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
+from habitat.tasks.nav.nav import NavigationEpisode, NavigationGoal
+import habitat_sim
+import magnum as mn
+HAS_HABITAT_LAB = True
+# except ImportError:
+#     HAS_HABITAT_LAB = False
+#     logger.warning("habitat-lab not installed — HabitatNavEnv will not be usable.")
 
 
 # ============================================================================
