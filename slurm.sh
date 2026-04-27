@@ -63,9 +63,18 @@ mkdir -p logs
 # Batch size     : 256 (2x default — larger gradient batches, more stable)
 # Start training : 10K (2x default — let buffer fill before updates)
 # ==============================================================================
-export PYOPENGL_PLATFORM=egl
-export MAGNUM_LOG=quiet  
-unset DISPLAY
+echo "=== GPU INFO ==="
+nvidia-smi
+echo "=== DISPLAY ==="
+echo $DISPLAY
+echo "=== EGL CHECK ==="
+python -c "
+import ctypes
+egl = ctypes.cdll.LoadLibrary('libEGL.so.1')
+print('EGL loaded OK')
+"
+echo "=== VULKAN CHECK ==="
+vulkaninfo --summary 2>/dev/null || echo "No vulkan"
 
 python train_habitat_her.py \
     --replay_buffer_size 1000000 \
