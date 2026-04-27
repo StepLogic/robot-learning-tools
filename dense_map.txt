@@ -1,0 +1,27 @@
+Trajectory One
+
+node 1136 - last node 88 distance 12 metres
+11 metres
+11.37 metres /20 metres
+
+
+Trajectory 2
+node 514  
+
+3.92/20.31 metres
+
+Trajectory3
+node 512 
+
+ 4.62 / (20.87+11.29+3.38)
+
+Trajectory 4
+
+Nodes 389
+
+4.09/*(4.09+10.63+3.35+1.28)
+
+Trajectory five
+
+nodes 354
+3.09/5.82 +10.84

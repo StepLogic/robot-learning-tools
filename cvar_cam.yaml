@@ -1,0 +1,80 @@
+%YAML:1.0
+# ORB-SLAM3 settings for the robot car
+# Camera: PinHole with radtan distortion (from Kalibr calibration)
+# IMU: WitMotion sensor (params from Kalibr calibration)
+# Calibrated: 2026-04 using Kalibr camchain-imucam result
+
+File.version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Camera
+# ---------------------------------------------------------------------------
+Camera.type: "PinHole"
+
+# Intrinsics from Kalibr (pinhole-radtan, 640x480)
+Camera1.fx: 135.5940629396921
+Camera1.fy: 135.30808591447993
+Camera1.cx: 328.28132901408514
+Camera1.cy: 240.97668974876345
+
+# Radtan distortion (k1, k2 radial; p1, p2 tangential)
+Camera1.k1: -0.18134448926943716
+Camera1.k2: 0.03413815474261978
+Camera1.p1: -0.001302733354939942
+Camera1.p2: -0.00881142691298998
+
+Camera.width: 640
+Camera.height: 480
+Camera.newWidth: 640
+Camera.newHeight: 480
+Camera.fps: 20
+Camera.RGB: 1
+
+# ---------------------------------------------------------------------------
+# IMU
+# ---------------------------------------------------------------------------
+# T_b_c1: body (IMU) to camera transform, from Kalibr T_cam_imu
+# (Kalibr T_cam_imu maps IMU frame to camera frame = ORB-SLAM3 T_b_c1)
+IMU.T_b_c1: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [0.518356005716656, -0.47460283536979864, 0.7113783803268288, 0.0003370480474186462,
+         0.6853000686341288, 0.7281343409136442, -0.013571938413937334, 0.0004900698326629207,
+         -0.5115377476467722, 0.49454274864889214, 0.7026781642340014, -0.00039727451983776065,
+         0.0, 0.0, 0.0, 1.0]
+
+# Noise parameters from Kalibr calibration
+# NOTE: gyroscope values assume rad/s input (convert deg/s -> rad/s in code)
+IMU.NoiseGyro: 0.0005        # rad/s/sqrt(Hz)
+IMU.NoiseAcc: 0.01           # m/s^2/sqrt(Hz)
+IMU.GyroWalk: 3.0e-05        # rad/s^2/sqrt(Hz)
+IMU.AccWalk: 0.0002          # m/s^3/sqrt(Hz)
+IMU.Frequency: 20.0          # Hz (one IMU reading per frame at ~20 fps)
+
+# Kalibr estimated timeshift: cam is 0.604s ahead of IMU
+# Handle this in application code by offsetting IMU timestamps
+# IMU timeshift not directly supported in ORB-SLAM3 v1.0 config
+
+# ---------------------------------------------------------------------------
+# ORB Extractor
+# ---------------------------------------------------------------------------
+ORBextractor.nFeatures: 1000
+ORBextractor.scaleFactor: 1.2
+ORBextractor.nLevels: 8
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+
+# ---------------------------------------------------------------------------
+# Viewer (optional, only used when viewer=true)
+# ---------------------------------------------------------------------------
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 1.0
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -1.8
+Viewer.ViewpointF: 500.0

@@ -1,0 +1,24 @@
+# Habitat ImageGoalNav reference config (Gibson scenes)
+# Note: the current implementation uses habitat_sim.Simulator directly,
+# not habitat.Env, so this YAML is for reference / future migration only.
+
+environment:
+  max_episode_steps: 500
+
+simulator:
+  type: "habitat_sim"
+  scene: "data/scene_datasets/gibson/Cantwell.glb"
+  scene_dataset: "data/scene_datasets/gibson/"
+  allow_sliding: true
+  gpu_device_id: 0
+  agent:
+    height: 0.88
+    radius: 0.1
+    sim_sensors:
+      rgb_sensor:
+        type: "HabitatSimRGBSensor"
+        height: 120
+        width: 160
+        hfov: 90
+        position: [0, 0.88, 0]
+    action_space: {}  # Empty: continuous velocity control used instead
