@@ -133,7 +133,7 @@ def _build_habitat_config(cfg: HabitatNavConfig) -> "OmegaConf.DictConfig":
     base_cfg.habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.hfov = int(cfg.hfov)
     base_cfg.habitat.simulator.habitat_sim_v0.gpu_device_id = cfg.gpu_device_id
     base_cfg.habitat.simulator.habitat_sim_v0.allow_sliding = cfg.allow_sliding
-    base_cfg.habitat.simulator.renderer.type = "EGL"
+    # base_cfg.habitat.simulator.renderer.type = "EGL"
     base_cfg.habitat.seed = cfg.seed
 
     # Remove depth sensor (we only need RGB + imagegoal)
