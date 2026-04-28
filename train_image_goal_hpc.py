@@ -124,7 +124,7 @@ class TrainConfig:
     max_episode_steps = 3000
     start_training = 1000
     pretrained_checkpoint = None
-    video_interval = 0
+    video_interval = 1000
     log_interval = 1000
     batch_size = 512
     checkpoint_interval = 1000
