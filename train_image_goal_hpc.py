@@ -9,10 +9,15 @@ Usage on HPC:
     export QT_QPA_PLATFORM=offscreen
     python test_hpc_headless.py
 """
+from collections import deque
+import datetime
 import os
 import sys
+from configs import drq_default
+import tqdm
 
 from habitat_wrappers import VideoRecorder
+from jaxrl2.examples.train_offline import FLAGS
 
 
 # Apply headless settings first, before any habitat imports
@@ -78,6 +83,26 @@ from wrappers import (
     save_checkpoint,
 )
 from habitat_wrappers import HabitatRewardWrapper
+
+POLICY_FOLDER = "robot_policy"
+def _find_latest_checkpoint(folder):
+    """Find the latest checkpoint in a folder, return (path, step) or (None, 0)."""
+    if not os.path.isdir(folder):
+        return None, 0
+    ckpts = []
+    for d in os.listdir(folder):
+        if d.startswith("checkpoint_"):
+            try:
+                step = int(d.split("_")[-1])
+                ckpts.append((os.path.abspath(os.path.join(folder, d)), step))
+            except ValueError:
+                continue
+    if not ckpts:
+        return None, 0
+    ckpts.sort(key=lambda x: x[1])
+    return ckpts[-1]
+
+
 class TrainConfig:
     scene_path = "data/gibson/Cantwell.glb"
     scene_dataset_path = "data/gibson"
@@ -95,6 +120,8 @@ class TrainConfig:
     goal_max_distance = 10.0
     randomize_scenes = False
     replay_buffer_size = int(1e6)
+    max_episode_steps = 3000
+    start_training = 1000
 
 device = "cuda"
 habitat_cfg = HabitatNavConfig(
@@ -108,7 +135,7 @@ habitat_cfg = HabitatNavConfig(
         gpu_device_id=TrainConfig.gpu_device_id,
         seed=TrainConfig.seed,
         debug_render=TrainConfig.debug_render,
-        headless=not TrainConfig.debug_render,
+        headless=TrainConfig.headless,
         goal_distance_scale=TrainConfig.goal_distance_scale,
         goal_max_distance=TrainConfig.goal_max_distance,
         randomize_scenes=TrainConfig.randomize_scenes,
@@ -126,10 +153,180 @@ env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
 env = GoalImageWrapper(env, encoder=shared_encoder)
 goal_threshold = 2.0
 env = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
-env =VideoRecorder(env, video_dir="test_videos", record_episodes=True)
-# env = reward_wrapper
-replay_buffer = ReplayBuffer(
-        env.observation_space,
-        env.action_space,
-        TrainConfig.replay_buffer_size,
+env = VideoRecorder(env, video_dir="test_videos", record_episodes=True)
+env = RecordEpisodeStatistics(env)
+env = TimeLimit(env, max_episode_steps=TrainConfig.max_episode_steps)
+kwargs = drq_default.get_config()
+
+agent = DrQLearner(
+        TrainConfig.seed,
+        env.observation_space.sample(),
+        env.action_space.sample(),
+        **kwargs,
     )
+
+# Resume checkpoint if available
+os.makedirs(POLICY_FOLDER, exist_ok=True)
+resume_path, resume_step = _find_latest_checkpoint(POLICY_FOLDER)
+if resume_path is not None:
+    agent = load_checkpoint(agent, resume_path)
+    print(f"[Checkpoint] Resumed from {resume_path} (step {resume_step:,})")
+elif FLAGS.pretrained_checkpoint:
+    agent = load_checkpoint(agent, FLAGS.pretrained_checkpoint)
+    print(f"[Checkpoint] Loaded pre-trained from {FLAGS.pretrained_checkpoint}")
+    resume_step = 0
+else:
+    resume_step = 0
+    print("[Checkpoint] Training from scratch")
+
+start_step = resume_step + 1
+
+# ── Replay buffer ─────────────────────────────────────────────────────────
+replay_buffer = ReplayBuffer(
+    env.observation_space,
+    env.action_space,
+    TrainConfig.replay_buffer_size,
+)
+
+
+# ── Noise ─────────────────────────────────────────────────────────────────
+ou_noise = OrnsteinUhlenbeckActionNoise(
+    mean=np.zeros(env.action_space.shape[0]),
+    theta=0.15,
+    sigma=0.2,
+)
+
+# ── Logging ───────────────────────────────────────────────────────────────
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+log_dir = os.path.join(TrainConfig.save_dir, f"habitat_nav_{timestamp}")
+logger = Logger(log_dir)
+
+# ── Video recording ──────────────────────────────────────────────────────
+video_rec = None
+if FLAGS.video_interval > 0:
+    video_dir = os.path.join(log_dir, "videos")
+    video_rec = VideoRecorder(env, video_dir=video_dir)
+    env = video_rec  # wrap so env.step/reset captures frames
+
+# ── Training loop ────────────────────────────────────────────────────────
+obs, info = env.reset()
+episode_reward = 0.0
+episode_length = 0
+episode_distance = 0.0
+episode_start_pos = info.get("pos", np.zeros(3)).copy()
+episode_prev_pos = episode_start_pos.copy()
+video_recording = False
+video_step_count = 0
+
+# Episode buffer for HER
+episode_transitions = []
+
+# Running episode stats
+episode_successes = deque(maxlen=100)
+episode_distances = deque(maxlen=100)
+
+pbar = tqdm.tqdm(range(start_step, TrainConfig.max_steps + 1),
+                    disable=not TrainConfig.tqdm, desc="Training")
+
+for step in pbar:
+    # ── Action selection ──────────────────────────────────────────────────
+    if step < TrainConfig.start_training:
+        action = env.action_space.sample()
+    else:
+        action = agent.sample_actions(obs)
+        noise = ou_noise()
+        action = np.clip(action + noise, env.action_space.low,
+                            env.action_space.high)
+        
+
+    # ── Environment step ─────────────────────────────────────────────────
+    next_obs, reward, terminated, truncated, next_info = env.step(action)
+
+    # ── Store transition ─────────────────────────────────────────────────
+    transition = dict(
+        observations=obs,
+        actions=action,
+        rewards=reward,
+        next_observations=next_obs,
+        masks=np.float32(1.0 - terminated),
+        dones=bool(terminated),
+    )
+    replay_buffer.insert(transition)
+    episode_reward += reward
+    episode_length += 1
+
+    # ── Episode end ──────────────────────────────────────────────────────
+    if terminated or truncated:
+        success = next_info.get("distance_to_goal", float("inf")) < goal_threshold if terminated else False
+
+        episode_transitions = []
+        hab_success = next_info.get("habitat_success", 0.0)
+        hab_spl = next_info.get("habitat_spl", 0.0)
+        episode_successes.append(float(success))
+        episode_distances.append(episode_distance)
+        logger.log_episode({
+            "return": episode_reward,
+            "length": episode_length,
+            "success": float(success),
+            "distance": episode_distance,
+            "habitat_success": float(hab_success),
+            "habitat_spl": float(hab_spl),
+        }, step)
+        episode_reward = 0.0
+        episode_length = 0
+        episode_distance = 0.0
+        obs, info = env.reset()
+        episode_start_pos = info.get("pos", np.zeros(3)).copy()
+        episode_prev_pos = episode_start_pos.copy()
+    else:
+        obs = next_obs
+        info = next_info
+
+    # ── Gradient update ──────────────────────────────────────────────────
+    if step >= TrainConfig.start_training and replay_buffer._size >= TrainConfig.batch_size:
+        batch = replay_buffer.sample(TrainConfig.batch_size)
+
+        update_info = agent.update(batch)
+
+        if step % FLAGS.log_interval == 0:
+            logger.log_training(update_info, step)
+
+    # ── Checkpoint ───────────────────────────────────────────────────────
+    if step % FLAGS.checkpoint_interval == 0 and step > FLAGS.start_training:
+        ckpt_dir = os.path.join(POLICY_FOLDER, f"checkpoint_{step}")
+        save_checkpoint(agent, replay_buffer, ckpt_dir, step)
+        print(f"[Checkpoint] Saved at step {step:,}")
+
+    # ── Video recording ──────────────────────────────────────────────────
+    if video_rec is not None:
+        if not video_recording and step % FLAGS.video_interval == 0:
+            video_rec.start_recording()
+            video_recording = True
+            video_step_count = 0
+        if video_recording:
+            video_step_count += 1
+            if video_step_count >= FLAGS.video_length:
+                video_rec.stop_and_save(f"step_{step:07d}.mp4")
+                video_recording = False
+
+    # ── Progress ──────────────────────────────────────────────────────────
+    if step % FLAGS.log_interval == 0:
+        pbar.set_postfix({
+            "step": step,
+            "buffer": replay_buffer._size,
+            "ep_rew": f"{np.mean(logger.episode_returns):.1f}" if logger.episode_returns else "0.0",
+            "sr": f"{np.mean(episode_successes):.0%}" if episode_successes else "0%",
+            "dist": f"{np.mean(episode_distances):.2f}m" if episode_distances else "0m",
+        })
+        logger.print_status(step, FLAGS.max_steps, extra_stats={
+            "Buffer size": replay_buffer._size,
+            "Goal threshold": goal_threshold,
+        })
+
+# ── Final save ───────────────────────────────────────────────────────────
+final_dir = os.path.join(POLICY_FOLDER, "final")
+save_checkpoint(agent, replay_buffer, final_dir, FLAGS.max_steps)
+print(f"\nTraining complete. Final checkpoint saved to {final_dir}")
+
+env.close()
+
