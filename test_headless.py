@@ -1,14 +1,24 @@
-# test_headless.py
+# test_scene.py
 import habitat_sim
+import numpy as np
 
-cfg = habitat_sim.SimulatorConfiguration()
-cfg.scene_id = "NONE"  # No scene, just test the sim object
-cfg.enable_physics = False
+backend_cfg = habitat_sim.SimulatorConfiguration()
+backend_cfg.scene_id = "data/gibson/Adairsville.glb"  # <-- update this
+backend_cfg.enable_physics = False
+
+sensor_spec = habitat_sim.CameraSensorSpec()
+sensor_spec.uuid = "color_sensor"
+sensor_spec.sensor_type = habitat_sim.SensorType.COLOR
+sensor_spec.resolution = [256, 256]
 
 agent_cfg = habitat_sim.agent.AgentConfiguration()
-sim_cfg = habitat_sim.Configuration(cfg, [agent_cfg])
+agent_cfg.sensor_specifications = [sensor_spec]
 
-sim = habitat_sim.Simulator(sim_cfg)
-print("Simulator created OK")
+cfg = habitat_sim.Configuration(backend_cfg, [agent_cfg])
+sim = habitat_sim.Simulator(cfg)
+print("Sim with scene: OK")
+
+obs = sim.get_sensor_observations()
+print("Observation shape:", obs["color_sensor"].shape)
 sim.close()
-print("Simulator closed OK")
+print("Done.")
