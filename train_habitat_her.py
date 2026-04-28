@@ -405,6 +405,7 @@ def main(args):
 
 
 if __name__ == "__main__":
+    import habitat_sim
     habitat_cfg = HabitatNavConfig(headless=True)
     # EnvClass = HabitatNavEnv
     render_mode = "rgb_array"
