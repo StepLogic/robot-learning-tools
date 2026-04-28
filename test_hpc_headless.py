@@ -58,7 +58,7 @@ print("\n=== Test 2: habitat-lab HabitatEnv (HabitatNavEnv) ===")
 try:
     from habitat_env import HabitatNavEnv
     from configs.habitat_config import HabitatNavConfig
-    # from train_habitat_her import HabitatRewardWrapper
+    from train_habitat_her import HabitatRewardWrapper
 
     from racer_imu_env import StackingWrapper
     from wrappers import (
@@ -69,21 +69,22 @@ try:
         load_checkpoint,
         save_checkpoint,
     )
+    from habitat_wrappers import HabitatRewardWrapper
     # device = "cuda"
     cfg = HabitatNavConfig(headless=True)
     env = HabitatNavEnv(cfg, render_mode="rgb_array")
-    # env = StackingWrapper(env, num_stack=3, image_format="rgb")
+    env = StackingWrapper(env, num_stack=3, image_format="rgb")
 
     # # Shared MobileNetV3 encoder for current obs and goal
-    # shared_encoder = MobileNetV3Encoder(
-    #     device=device,
-    #     num_blocks=13,
-    #     input_size=84,
-    # )
-    # env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
-    # env = GoalImageWrapper(env, encoder=shared_encoder)
-    # goal_threshold = 2.0
-    # reward_wrapper = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
+    shared_encoder = MobileNetV3Encoder(
+        device=device,
+        num_blocks=13,
+        input_size=84,
+    )
+    env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
+    env = GoalImageWrapper(env, encoder=shared_encoder)
+    goal_threshold = 2.0
+    env = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
     # env = reward_wrapper
 
     print("  HabitatNavEnv created: OK")
