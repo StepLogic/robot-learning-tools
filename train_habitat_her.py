@@ -182,7 +182,7 @@ def main(args):
         print(f"Scene randomization: {len(habitat_cfg.get_scene_paths())} scenes available")
 
     # EnvClass = HabitatNavEnv
-    render_mode = "human" if args.debug_render else "rgb_array"
+    render_mode = "rgb_array"
     env = HabitatNavEnv(config=habitat_cfg, render_mode=render_mode)
     env = StackingWrapper(env, num_stack=args.frame_stack, image_format="rgb")
 
@@ -252,8 +252,8 @@ def main(args):
     video_rec = None
     if args.video_interval > 0:
         video_dir = os.path.join(log_dir, "videos")
-        video_rec = VideoRecorder(env, video_dir=video_dir)
-        env = video_rec  # wrap so env.step/reset captures frames
+        env = VideoRecorder(env, video_dir=video_dir)
+        # env = video_rec  # wrap so env.step/reset captures frames
 
     # ── Training loop ────────────────────────────────────────────────────────
     obs, info = env.reset()
@@ -375,17 +375,17 @@ def main(args):
             save_checkpoint(agent, replay_buffer, ckpt_dir, step)
             print(f"[Checkpoint] Saved at step {step:,}")
 
-        # ── Video recording ──────────────────────────────────────────────────
-        if video_rec is not None:
-            if not video_recording and step % args.video_interval == 0:
-                video_rec.start_recording()
-                video_recording = True
-                video_step_count = 0
-            if video_recording:
-                video_step_count += 1
-                if video_step_count >= args.video_length:
-                    video_rec.stop_and_save(f"step_{step:07d}.mp4")
-                    video_recording = False
+        # # ── Video recording ──────────────────────────────────────────────────
+        # if video_rec is not None:
+        #     if not video_recording and step % args.video_interval == 0:
+        #         video_rec.start_recording()
+        #         video_recording = True
+        #         video_step_count = 0
+        #     if video_recording:
+        #         video_step_count += 1
+        #         if video_step_count >= args.video_length:
+        #             video_rec.stop_and_save(f"step_{step:07d}.mp4")
+        #             video_recording = False
 
         # ── Progress ──────────────────────────────────────────────────────────
         if step % args.log_interval == 0:
