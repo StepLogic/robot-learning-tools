@@ -11,6 +11,9 @@ Wrapper stack:
   → GoalImageWrapper → HabitatRewardWrapper → RecordEpisodeStatistics → TimeLimit
 """
 import os
+os.environ.pop("DISPLAY", None)
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import pickle
 import random
 from collections import deque
