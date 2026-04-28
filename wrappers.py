@@ -422,6 +422,11 @@ class GoalImageWrapper(gym.Wrapper):
             shape=(self.goal_feature_dim,),
             dtype=np.float32,
         )
+        new_spaces["goal_mask"] = spaces.Box(
+            low=0.0, high=1.0,
+            shape=(1,),
+            dtype=np.float32,
+        )
         self.observation_space = spaces.Dict(new_spaces)
 
     # ── Private ────────────────────────────────────────────────────────────────
@@ -442,8 +447,10 @@ class GoalImageWrapper(gym.Wrapper):
         obs = dict(obs)
         obs["goal_features"] = goal_features
         obs["imu"] = obs["imu"]
-        if obs["imu"][5] < 0.0:
-                obs["goal_features"] = np.zeros_like(obs["goal_features"])
+        mask= random.random() < 0.3
+        if mask: # decouple this
+            obs["goal_features"] = np.zeros_like(obs["goal_features"])
+        obs["goal_mask"] = np.array([1.0 if mask else 0.0], dtype=np.float32)
         return obs, reward, terminated, truncated, info
 
     def reset(self, **kwargs):
@@ -451,6 +458,7 @@ class GoalImageWrapper(gym.Wrapper):
         goal_features = self._encode_goal(info)
         obs = dict(obs)
         obs["goal_features"] = goal_features
+        obs["goal_mask"] = 0.0
         return obs, info
 
 

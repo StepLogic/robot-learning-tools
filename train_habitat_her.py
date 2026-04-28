@@ -1,51 +1,74 @@
-#!/usr/bin/env python
 """
-DrQ Training — Habitat Image-Goal Navigation
-=============================================
-Uses Habitat-Sim with continuous VelocityControl for navigation.
-Goal images are encoded via a Siamese MobileNetV3 encoder (shared
-with the current-observation encoder).
+Diagnostic test for Habitat headless HPC operation.
 
-Wrapper stack:
-  HabitatNavEnv → StackingWrapper → MobileNetFeatureWrapper
-  → GoalImageWrapper → HabitatRewardWrapper → RecordEpisodeStatistics → TimeLimit
+Tests both raw habitat_sim (like test_headless.py) and habitat-lab Env
+(like train_habitat_her.py) to narrow down segfault source.
+
+Usage on HPC:
+    unset DISPLAY
+    export QT_QPA_PLATFORM=offscreen
+    python test_hpc_headless.py
 """
-import os
-
-from habitat_wrappers import HabitatRewardWrapper
-
-# ── Headless / HPC env vars (before any habitat imports) ──────────────────
-os.environ.pop("DISPLAY", None)
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("MAGNUM_GPU_VALIDATION", "0")
-
-import pickle
-import random
 from collections import deque
-from datetime import datetime
-import faulthandler
-import cv2
-import flax
-import jax
-import jax.numpy as jnp
+import datetime
+import os
+import sys
+
 import numpy as np
-from absl import app, flags
-from ml_collections import config_flags
-
-import torch
 import tqdm
+from configs import drq_default
 
-import gymnasium as gym
-from gymnasium import spaces
+from habitat_wrappers import VideoRecorder
 
+
+print("=== Environment ===")
+print(f"DISPLAY={os.environ.get('DISPLAY', '<unset>')}")
+print(f"QT_QPA_PLATFORM={os.environ.get('QT_QPA_PLATFORM', '<unset>')}")
+print(f"EGL_VISIBLE_DEVICES={os.environ.get('EGL_VISIBLE_DEVICES', '<unset>')}")
+print(f"MAGNUM_GPU_VALIDATION={os.environ.get('MAGNUM_GPU_VALIDATION', '<unset>')}")
+
+# ── Test 1: Raw habitat_sim (should work — test_headless.py pattern) ──
+print("\n=== Test 1: Raw habitat_sim.Simulator ===")
+try:
+    import habitat_sim
+
+    backend_cfg = habitat_sim.SimulatorConfiguration()
+    backend_cfg.scene_id = "data/gibson/Cantwell.glb"
+    backend_cfg.enable_physics = False
+
+    sensor_spec = habitat_sim.CameraSensorSpec()
+    sensor_spec.uuid = "color_sensor"
+    sensor_spec.sensor_type = habitat_sim.SensorType.COLOR
+    sensor_spec.resolution = [120, 160]
+
+    agent_cfg = habitat_sim.agent.AgentConfiguration()
+    agent_cfg.sensor_specifications = [sensor_spec]
+
+    cfg = habitat_sim.Configuration(backend_cfg, [agent_cfg])
+    sim = habitat_sim.Simulator(cfg)
+    print("  Raw Simulator created: OK")
+
+    obs = sim.get_sensor_observations()
+    print(f"  Observation shape: {obs['color_sensor'].shape}: OK")
+    sim.close()
+    print("  Test 1 PASSED")
+except Exception as e:
+    print(f"  Test 1 FAILED: {e}")
+    sys.exit(1)
+
+
+
+
+
+
+from habitat_env import HabitatNavEnv
+from configs.habitat_config import HabitatNavConfig
 from jaxrl2.agents import DrQLearner
 from jaxrl2.data import ReplayBuffer
 from jaxrl2.noise import OrnsteinUhlenbeckActionNoise
 from jaxrl2.wrappers.record_statistics import RecordEpisodeStatistics
 from jaxrl2.wrappers.timelimit import TimeLimit
 
-from habitat_env import HabitatNavEnv
-from configs.habitat_config import HabitatNavConfig
 from racer_imu_env import StackingWrapper
 from wrappers import (
     Logger,
@@ -55,69 +78,7 @@ from wrappers import (
     load_checkpoint,
     save_checkpoint,
 )
-
-faulthandler.enable()
-flax.config.update("flax_use_orbax_checkpointing", True)
-FLAGS = flags.FLAGS
-
-# ── Environment flags ────────────────────────────────────────────────────────
-flags.DEFINE_string("env_name", "HabitatImageNav-v0", "Environment name.")
-flags.DEFINE_string("scene_path", "data/gibson/Cantwell.glb",
-                    "Path to Gibson .glb scene file.")
-flags.DEFINE_string("scene_dataset_path", "",
-                    "Path to Gibson scene dataset directory (empty for standalone GLB).")
-flags.DEFINE_boolean("randomize_scenes", False,
-                    "Randomly select a different Gibson scene each episode.")
-flags.DEFINE_integer("control_frequency", 5, "Habitat control frequency (Hz).")
-flags.DEFINE_integer("frame_skip", 6, "Physics integration steps per action.")
-flags.DEFINE_float("max_linear_velocity", 0.5, "Max forward velocity (m/s).")
-flags.DEFINE_float("max_angular_velocity", 1.5, "Max turning rate (rad/s).")
-flags.DEFINE_float("imu_noise_std", 0.0, "Gaussian noise std for synthesized IMU.")
-flags.DEFINE_integer("gpu_device_id", 0, "Habitat-Sim GPU device ID.")
-flags.DEFINE_boolean("debug_render", False,
-                    "Show cv2 debug window (disables headless mode).")
-
-# ── Training flags ───────────────────────────────────────────────────────────
-flags.DEFINE_string("save_dir", "./logs/", "Tensorboard log dir.")
-flags.DEFINE_integer("seed", 42, "Random seed.")
-flags.DEFINE_integer("log_interval", 1000, "Logging interval.")
-flags.DEFINE_integer("eval_interval", 50000, "Eval interval (not used yet).")
-flags.DEFINE_integer("checkpoint_interval", 5000, "Checkpoint interval.")
-flags.DEFINE_integer("video_interval", 50000, "Save a video every N steps (0 = disabled).")
-flags.DEFINE_integer("video_length", 500, "Number of steps per video clip.")
-flags.DEFINE_integer("batch_size", 128, "Batch size.")
-flags.DEFINE_integer("max_steps", int(1e6), "Total training steps.")
-flags.DEFINE_integer("start_training", int(5e3), "Steps before updates begin.")
-flags.DEFINE_integer("replay_buffer_size", int(1e5), "Replay buffer capacity.")
-flags.DEFINE_boolean("tqdm", True, "Show tqdm progress bar.")
-flags.DEFINE_integer("frame_stack", 3, "Frame stack depth.")
-flags.DEFINE_integer("mobilenet_blocks", 13, "MobileNetV3 blocks (full network).")
-flags.DEFINE_integer("mobilenet_input_size", 84, "MobileNetV3 input size.")
-
-flags.DEFINE_float("goal_distance_scale", 3.0,
-                    "Exponential rate for goal distance (meters, lower = closer goals).")
-flags.DEFINE_float("goal_max_distance", 10.0,
-                    "Cap on sampled goal distance (meters).")
-flags.DEFINE_integer("max_episode_steps", 1000, "Max steps per episode.")
-
-# ── Expert / teleop flags ────────────────────────────────────────────────────
-flags.DEFINE_string("pretrained_checkpoint", "",
-                    "Path to pre-trained checkpoint (empty = no preload).")
-flags.DEFINE_float("expert_sample_ratio", 0.0,
-                   "Fraction of batch from expert buffer (0 = disabled).")
-flags.DEFINE_string("expert_buffer_path", "",
-                    "Path to expert replay buffer .pkl (empty = none).")
-
-# ── HER flags ────────────────────────────────────────────────────────────────
-flags.DEFINE_float("her_ratio", 0.0,
-                   "Fraction of episode transitions to relabel with HER (0 = disabled).")
-flags.DEFINE_float("her_goal_threshold", None,
-                   "Feature-distance threshold for HER goal reward (None = auto from goal_threshold).")
-
-config_flags.DEFINE_config_file(
-    "config", "./configs/drq_default.py",
-    "Training hyperparameter config.", lock_config=False,
-)
+from habitat_wrappers import HabitatRewardWrapper
 
 POLICY_FOLDER = "robot_policy"
 def _find_latest_checkpoint(folder):
@@ -138,341 +99,241 @@ def _find_latest_checkpoint(folder):
     return ckpts[-1]
 
 
+class TrainConfig:
+    scene_path = "data/gibson/Cantwell.glb"
+    scene_dataset_path = "data/gibson"
+    control_frequency = 10
+    device = "cuda"
+    frame_skip = 2
+    max_linear_velocity = 0.5
+    max_angular_velocity = 1.5
+    imu_noise_std = 0.0
+    gpu_device_id = 0
+    seed = 42
+    debug_render = True
+    headless = False
+    goal_distance_scale = 3.0
+    goal_max_distance = 10.0
+    randomize_scenes = False
+    replay_buffer_size = int(1e5)
+    max_episode_steps = 3000
+    start_training = 1000
+    pretrained_checkpoint = None
+    video_interval = 0
+    video_length = 0
+    log_interval = 1000
+    batch_size = 128
+    checkpoint_interval = 1000
+    save_dir = "./logs/"
+    tqdm = True
+    max_steps = int(5e6)
 
-def main(_):
-    print("\n" + "=" * 70)
-    print("DrQ Habitat Image-Goal Nav | Siamese MobileNetV3")
-    print("=" * 70 + "\n")
 
-    np.random.seed(FLAGS.seed)
-    random.seed(FLAGS.seed)
-    torch.manual_seed(FLAGS.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(FLAGS.seed)
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Device: {device}")
-
-    # ── Environment ───────────────────────────────────────────────────────────
-    print("Building Habitat environment…")
-    habitat_cfg = HabitatNavConfig(
-        scene_path=FLAGS.scene_path,
-        scene_dataset_path=FLAGS.scene_dataset_path,
-        control_frequency=FLAGS.control_frequency,
-        frame_skip=FLAGS.frame_skip,
-        max_linear_velocity=FLAGS.max_linear_velocity,
-        max_angular_velocity=FLAGS.max_angular_velocity,
-        imu_noise_std=FLAGS.imu_noise_std,
-        gpu_device_id=FLAGS.gpu_device_id,
-        seed=FLAGS.seed,
-        debug_render=FLAGS.debug_render,
-        headless=not FLAGS.debug_render,
-        goal_distance_scale=FLAGS.goal_distance_scale,
-        goal_max_distance=FLAGS.goal_max_distance,
-        randomize_scenes=FLAGS.randomize_scenes,
+device = "cuda"
+habitat_cfg = HabitatNavConfig(
+        scene_path=TrainConfig.scene_path,
+        scene_dataset_path=TrainConfig.scene_dataset_path,
+        control_frequency=TrainConfig.control_frequency,
+        frame_skip=TrainConfig.frame_skip,
+        max_linear_velocity=TrainConfig.max_linear_velocity,
+        max_angular_velocity=TrainConfig.max_angular_velocity,
+        imu_noise_std=TrainConfig.imu_noise_std,
+        gpu_device_id=TrainConfig.gpu_device_id,
+        seed=TrainConfig.seed,
+        debug_render=TrainConfig.debug_render,
+        headless=TrainConfig.headless,
+        goal_distance_scale=TrainConfig.goal_distance_scale,
+        goal_max_distance=TrainConfig.goal_max_distance,
+        randomize_scenes=TrainConfig.randomize_scenes,
     )
-    if FLAGS.randomize_scenes:
-        print(f"Scene randomization: {len(habitat_cfg.get_scene_paths())} scenes available")
 
-    # EnvClass = HabitatNavEnv
-    render_mode = "human" if FLAGS.debug_render else "rgb_array"
-    env = HabitatNavEnv(config=habitat_cfg, render_mode=render_mode)
-    env = StackingWrapper(env, num_stack=FLAGS.frame_stack, image_format="rgb")
+env = HabitatNavEnv(habitat_cfg, render_mode="human" if TrainConfig.debug_render else "rgb_array")
+env = StackingWrapper(env, num_stack=3, image_format="rgb")
 
-    # Shared MobileNetV3 encoder for current obs and goal
-    shared_encoder = MobileNetV3Encoder(
-        device=device,
-        num_blocks=FLAGS.mobilenet_blocks,
-        input_size=FLAGS.mobilenet_input_size,
-    )
-    env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
-    env = GoalImageWrapper(env, encoder=shared_encoder)
-    goal_threshold = 2.0
-    reward_wrapper = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
-    env = reward_wrapper
+# # Shared MobileNetV3 encoder for current obs and goal
+shared_encoder = MobileNetV3Encoder(
+    device=device,
+    num_blocks=13,
+    input_size=84,
+)
+env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
+env = GoalImageWrapper(env, encoder=shared_encoder)
+goal_threshold = 2.0
+env = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
+env = VideoRecorder(env, video_dir="test_videos", record_episodes=True)
+env = RecordEpisodeStatistics(env)
+env = TimeLimit(env, max_episode_steps=TrainConfig.max_episode_steps)
+kwargs = drq_default.get_config()
 
-    env = RecordEpisodeStatistics(env)
-    env = TimeLimit(env, max_episode_steps=FLAGS.max_episode_steps)
-
-    # HER setup
-    her_ratio = FLAGS.her_ratio
-    feature_dim = env.observation_space.spaces['goal_features'].shape[0]
-    # HER threshold is in feature-space distance (L2 norm of MobileNet features),
-    # not geodesic meters.  When not explicitly set, use a reasonable default
-    # based on the feature dimensionality.
-    her_goal_threshold = FLAGS.her_goal_threshold if FLAGS.her_goal_threshold else 1.0
-    k_goal = reward_wrapper.k_goal
-
-    print(f"Observation space : {env.observation_space}")
-    print(f"Action space      : {env.action_space}")
-    print(f"HER ratio         : {her_ratio} (threshold: {her_goal_threshold})\n")
-
-    # ── Agent ─────────────────────────────────────────────────────────────────
-    kwargs = dict(FLAGS.config) if FLAGS.config else {}
-    agent = DrQLearner(
-        FLAGS.seed,
+agent = DrQLearner(
+        TrainConfig.seed,
         env.observation_space.sample(),
         env.action_space.sample(),
         **kwargs,
     )
 
-    # Resume checkpoint if available
-    os.makedirs(POLICY_FOLDER, exist_ok=True)
-    resume_path, resume_step = _find_latest_checkpoint(POLICY_FOLDER)
-    if resume_path is not None:
-        agent = load_checkpoint(agent, resume_path)
-        print(f"[Checkpoint] Resumed from {resume_path} (step {resume_step:,})")
-    elif FLAGS.pretrained_checkpoint:
-        agent = load_checkpoint(agent, FLAGS.pretrained_checkpoint)
-        print(f"[Checkpoint] Loaded pre-trained from {FLAGS.pretrained_checkpoint}")
-        resume_step = 0
+# Resume checkpoint if available
+os.makedirs(POLICY_FOLDER, exist_ok=True)
+resume_path, resume_step = _find_latest_checkpoint(POLICY_FOLDER)
+if resume_path is not None:
+    agent = load_checkpoint(agent, resume_path)
+    print(f"[Checkpoint] Resumed from {resume_path} (step {resume_step:,})")
+elif TrainConfig.pretrained_checkpoint:
+    agent = load_checkpoint(agent, TrainConfig.pretrained_checkpoint)
+    print(f"[Checkpoint] Loaded pre-trained from {TrainConfig.pretrained_checkpoint}")
+    resume_step = 0
+else:
+    resume_step = 0
+    print("[Checkpoint] Training from scratch")
+
+start_step = resume_step + 1
+
+# ── Replay buffer ─────────────────────────────────────────────────────────
+replay_buffer = ReplayBuffer(
+    env.observation_space,
+    env.action_space,
+    TrainConfig.replay_buffer_size,
+)
+
+
+# ── Noise ─────────────────────────────────────────────────────────────────
+ou_noise = OrnsteinUhlenbeckActionNoise(
+    mean=np.zeros(env.action_space.shape[0]),
+    theta=0.15,
+    sigma=0.2,
+)
+
+# ── Logging ───────────────────────────────────────────────────────────────
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+log_dir = os.path.join(TrainConfig.save_dir, f"habitat_nav_{timestamp}")
+logger = Logger(log_dir)
+
+# ── Video recording ──────────────────────────────────────────────────────
+video_rec = None
+if TrainConfig.video_interval > 0:
+    video_dir = os.path.join(log_dir, "videos")
+    video_rec = VideoRecorder(env, video_dir=video_dir)
+    env = video_rec  # wrap so env.step/reset captures frames
+
+# ── Training loop ────────────────────────────────────────────────────────
+obs, info = env.reset()
+episode_reward = 0.0
+episode_length = 0
+episode_distance = 0.0
+episode_start_pos = info.get("pos", np.zeros(3)).copy()
+episode_prev_pos = episode_start_pos.copy()
+video_recording = False
+video_step_count = 0
+
+# Episode buffer for HER
+episode_transitions = []
+
+# Running episode stats
+episode_successes = deque(maxlen=100)
+episode_distances = deque(maxlen=100)
+
+pbar = tqdm.tqdm(range(start_step, TrainConfig.max_steps + 1),
+                    disable=not TrainConfig.tqdm, desc="Training")
+
+for step in pbar:
+    # ── Action selection ──────────────────────────────────────────────────
+    if step < TrainConfig.start_training:
+        action = env.action_space.sample()
     else:
-        resume_step = 0
-        print("[Checkpoint] Training from scratch")
+        action = agent.sample_actions(obs)
+        noise = ou_noise()
+        action = np.clip(action + noise, env.action_space.low,
+                            env.action_space.high)
+        
 
-    start_step = resume_step + 1
+    # ── Environment step ─────────────────────────────────────────────────
+    next_obs, reward, terminated, truncated, next_info = env.step(action)
 
-    # ── Replay buffer ─────────────────────────────────────────────────────────
-    replay_buffer = ReplayBuffer(
-        env.observation_space,
-        env.action_space,
-        FLAGS.replay_buffer_size,
+    # ── Store transition ─────────────────────────────────────────────────
+    transition = dict(
+        observations=obs,
+        actions=action,
+        rewards=reward,
+        next_observations=next_obs,
+        masks=np.float32(1.0 - terminated),
+        dones=bool(terminated),
     )
+    replay_buffer.insert(transition)
+    episode_reward += reward
+    episode_length += 1
 
-    # Optional expert buffer
-    expert_buf = None
-    if FLAGS.expert_buffer_path and os.path.exists(FLAGS.expert_buffer_path):
-        with open(FLAGS.expert_buffer_path, "rb") as f:
-            expert_buf = pickle.load(f)
-        print(f"[Expert] Loaded expert buffer: {expert_buf._size} transitions")
+    # ── Episode end ──────────────────────────────────────────────────────
+    if terminated or truncated:
+        success = next_info.get("distance_to_goal", float("inf")) < goal_threshold if terminated else False
 
-    # ── Noise ─────────────────────────────────────────────────────────────────
-    ou_noise = OrnsteinUhlenbeckActionNoise(
-        mean=np.zeros(env.action_space.shape[0]),
-        theta=0.15,
-        sigma=0.2,
-    )
+        episode_transitions = []
+        hab_success = next_info.get("habitat_success", 0.0)
+        hab_spl = next_info.get("habitat_spl", 0.0)
+        episode_successes.append(float(success))
+        episode_distances.append(episode_distance)
+        logger.log_episode({
+            "return": episode_reward,
+            "length": episode_length,
+            "success": float(success),
+            "distance": episode_distance,
+            "habitat_success": float(hab_success),
+            "habitat_spl": float(hab_spl),
+        }, step)
+        episode_reward = 0.0
+        episode_length = 0
+        episode_distance = 0.0
+        obs, info = env.reset()
+        episode_start_pos = info.get("pos", np.zeros(3)).copy()
+        episode_prev_pos = episode_start_pos.copy()
+    else:
+        obs = next_obs
+        info = next_info
 
-    # ── Logging ───────────────────────────────────────────────────────────────
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = os.path.join(FLAGS.save_dir, f"habitat_nav_{timestamp}")
-    logger = Logger(log_dir)
+    # ── Gradient update ──────────────────────────────────────────────────
+    if step >= TrainConfig.start_training and len(replay_buffer) >= TrainConfig.batch_size:
+        batch = replay_buffer.sample(TrainConfig.batch_size)
 
-    # ── Video recording ──────────────────────────────────────────────────────
-    video_rec = None
-    if FLAGS.video_interval > 0:
-        video_dir = os.path.join(log_dir, "videos")
-        video_rec = VideoRecorder(env, video_dir=video_dir)
-        env = video_rec  # wrap so env.step/reset captures frames
+        update_info = agent.update(batch)
 
-    # ── Training loop ────────────────────────────────────────────────────────
-    obs, info = env.reset()
-    episode_reward = 0.0
-    episode_length = 0
-    episode_distance = 0.0
-    episode_start_pos = info.get("pos", np.zeros(3)).copy()
-    episode_prev_pos = episode_start_pos.copy()
-    video_recording = False
-    video_step_count = 0
+        if step % TrainConfig.log_interval == 0:
+            logger.log_training(update_info, step)
 
-    # Episode buffer for HER
-    episode_transitions = []
+    # ── Checkpoint ───────────────────────────────────────────────────────
+    if step % TrainConfig.checkpoint_interval == 0 and step > TrainConfig.start_training:
+        ckpt_dir = os.path.join(POLICY_FOLDER, f"checkpoint_{step}")
+        save_checkpoint(agent, replay_buffer, ckpt_dir, step)
+        print(f"[Checkpoint] Saved at step {step:,}")
 
-    # Running episode stats
-    episode_successes = deque(maxlen=100)
-    episode_distances = deque(maxlen=100)
+    # ── Video recording ──────────────────────────────────────────────────
+    if video_rec is not None:
+        if not video_recording and step % TrainConfig.video_interval == 0:
+            video_rec.start_recording()
+            video_recording = True
+            video_step_count = 0
+        if video_recording:
+            video_step_count += 1
+            if video_step_count >= TrainConfig.video_length:
+                video_rec.stop_and_save(f"step_{step:07d}.mp4")
+                video_recording = False
 
-    pbar = tqdm.tqdm(range(start_step, FLAGS.max_steps + 1),
-                     disable=not FLAGS.tqdm, desc="Training")
-
-    for step in pbar:
-        # ── Action selection ──────────────────────────────────────────────────
-        if step < FLAGS.start_training:
-            action = env.action_space.sample()
-        else:
-            action = agent.sample_actions(obs)
-            noise = ou_noise()
-            action = np.clip(action + noise, env.action_space.low,
-                             env.action_space.high)
-            
-
-        # ── Environment step ─────────────────────────────────────────────────
-        next_obs, reward, terminated, truncated, next_info = env.step(action)
-
-        # ── Store transition ─────────────────────────────────────────────────
-        transition = dict(
-            observations=obs,
-            actions=action,
-            rewards=reward,
-            next_observations=next_obs,
-            masks=np.float32(1.0 - terminated),
-            dones=bool(terminated),
-        )
-        replay_buffer.insert(transition)
-        episode_reward += reward
-        episode_length += 1
-
-        # ── HER episode buffer ──────────────────────────────────────────────────
-        # Extract current-frame features from stacked pixels for goal relabeling
-        current_features = next_obs["pixels"][-feature_dim:]
-        episode_transitions.append({
-            "obs": obs,
-            "action": action,
-            "reward": reward,
-            "next_obs": next_obs,
-            "terminated": bool(terminated),
-            "goal_features": next_obs.get("goal_features", np.zeros(feature_dim)),
-            "current_features": current_features,
+    # ── Progress ──────────────────────────────────────────────────────────
+    if step % TrainConfig.log_interval == 0:
+        pbar.set_postfix({
+            "step": step,
+            "buffer": len(replay_buffer),
+            "ep_rew": f"{np.mean(logger.episode_returns):.1f}" if logger.episode_returns else "0.0",
+            "sr": f"{np.mean(episode_successes):.0%}" if episode_successes else "0%",
+            "dist": f"{np.mean(episode_distances):.2f}m" if episode_distances else "0m",
+        })
+        logger.print_status(step, TrainConfig.max_steps, extra_stats={
+            "Buffer size": len(replay_buffer),
+            "Goal threshold": goal_threshold,
         })
 
-        # ── Distance covered tracking ──────────────────────────────────────────
-        curr_pos = next_info.get("pos", None)
-        if curr_pos is not None:
-            episode_distance += np.linalg.norm(curr_pos - episode_prev_pos)
-            episode_prev_pos = curr_pos.copy()
+# ── Final save ───────────────────────────────────────────────────────────
+final_dir = os.path.join(POLICY_FOLDER, "final")
+save_checkpoint(agent, replay_buffer, final_dir, TrainConfig.max_steps)
+print(f"\nTraining complete. Final checkpoint saved to {final_dir}")
 
-        # ── Episode end ──────────────────────────────────────────────────────
-        if terminated or truncated:
-            success = next_info.get("distance_to_goal", float("inf")) < goal_threshold if terminated else False
+env.close()
 
-            # ── HER: relabel transitions with future achieved goals ────────────
-            # Standard HER "future" strategy: for each transition, sample a
-            # future state from the same episode and use its visual features
-            # as the new goal. Reward is based on feature-space distance.
-            if her_ratio > 0 and len(episode_transitions) > 1:
-                ep_len = len(episode_transitions)
-
-                for idx in range(ep_len - 1):
-                    if np.random.random() > her_ratio:
-                        continue
-
-                    t = episode_transitions[idx]
-                    # Sample a future state as the virtual goal
-                    future_idx = np.random.randint(idx + 1, ep_len)
-                    future_t = episode_transitions[future_idx]
-                    new_goal_features = future_t["current_features"]
-
-                    # Relabel goal_features in obs
-                    her_obs = dict(t["obs"])
-                    her_next_obs = dict(t["next_obs"])
-                    her_obs["goal_features"] = new_goal_features.copy()
-                    her_next_obs["goal_features"] = new_goal_features.copy()
-
-                    # Reward: sparse bonus when the agent's state matches the
-                    # virtual goal (i.e. agent reached the future state)
-                    her_reward = -1.0
-                    agent_features = t["current_features"]
-                    feat_dist = np.linalg.norm(agent_features - new_goal_features)
-                    goal_reached = feat_dist < her_goal_threshold
-                    if goal_reached:
-                        her_reward += k_goal
-
-                    her_transition = dict(
-                        observations=her_obs,
-                        actions=t["action"],
-                        rewards=her_reward,
-                        next_observations=her_next_obs,
-                        masks=np.float32(0.0 if goal_reached else 1.0),
-                        dones=bool(goal_reached),
-                    )
-                    replay_buffer.insert(her_transition)
-
-            episode_transitions = []
-            hab_success = next_info.get("habitat_success", 0.0)
-            hab_spl = next_info.get("habitat_spl", 0.0)
-            episode_successes.append(float(success))
-            episode_distances.append(episode_distance)
-            logger.log_episode({
-                "return": episode_reward,
-                "length": episode_length,
-                "success": float(success),
-                "distance": episode_distance,
-                "habitat_success": float(hab_success),
-                "habitat_spl": float(hab_spl),
-            }, step)
-            episode_reward = 0.0
-            episode_length = 0
-            episode_distance = 0.0
-            obs, info = env.reset()
-            episode_start_pos = info.get("pos", np.zeros(3)).copy()
-            episode_prev_pos = episode_start_pos.copy()
-        else:
-            obs = next_obs
-            info = next_info
-
-        # ── Gradient update ──────────────────────────────────────────────────
-        if step >= FLAGS.start_training and replay_buffer._size >= FLAGS.batch_size:
-            batch = replay_buffer.sample(FLAGS.batch_size)
-
-            # Mixed batch with expert data
-            if expert_buf is not None and FLAGS.expert_sample_ratio > 0:
-                n_expert = int(FLAGS.batch_size * FLAGS.expert_sample_ratio)
-                n_online = FLAGS.batch_size - n_expert
-                online_batch = replay_buffer.sample(n_online)
-                expert_batch = expert_buf.sample(n_expert)
-                # Merge: unfreeze FrozenDicts, concatenate, refreeze
-                from flax.core import frozen_dict
-                online_unfrozen = frozen_dict.unfreeze(online_batch)
-                expert_unfrozen = frozen_dict.unfreeze(expert_batch)
-                merged = {}
-                for key in online_unfrozen:
-                    if isinstance(online_unfrozen[key], dict):
-                        merged[key] = {
-                            k: np.concatenate(
-                                [online_unfrozen[key][k], expert_unfrozen[key][k]]
-                            )
-                            for k in online_unfrozen[key]
-                        }
-                    else:
-                        merged[key] = np.concatenate(
-                            [online_unfrozen[key], expert_unfrozen[key]], axis=0
-                        )
-                batch = frozen_dict.freeze(merged)
-
-            update_info = agent.update(batch)
-
-            if step % FLAGS.log_interval == 0:
-                logger.log_training(update_info, step)
-
-        # ── Checkpoint ───────────────────────────────────────────────────────
-        if step % FLAGS.checkpoint_interval == 0 and step > FLAGS.start_training:
-            ckpt_dir = os.path.join(POLICY_FOLDER, f"checkpoint_{step}")
-            save_checkpoint(agent, replay_buffer, ckpt_dir, step)
-            print(f"[Checkpoint] Saved at step {step:,}")
-
-        # ── Video recording ──────────────────────────────────────────────────
-        if video_rec is not None:
-            if not video_recording and step % FLAGS.video_interval == 0:
-                video_rec.start_recording()
-                video_recording = True
-                video_step_count = 0
-            if video_recording:
-                video_step_count += 1
-                if video_step_count >= FLAGS.video_length:
-                    video_rec.stop_and_save(f"step_{step:07d}.mp4")
-                    video_recording = False
-
-        # ── Progress ──────────────────────────────────────────────────────────
-        if step % FLAGS.log_interval == 0:
-            pbar.set_postfix({
-                "step": step,
-                "buffer": replay_buffer._size,
-                "ep_rew": f"{np.mean(logger.episode_returns):.1f}" if logger.episode_returns else "0.0",
-                "sr": f"{np.mean(episode_successes):.0%}" if episode_successes else "0%",
-                "dist": f"{np.mean(episode_distances):.2f}m" if episode_distances else "0m",
-            })
-            logger.print_status(step, FLAGS.max_steps, extra_stats={
-                "Buffer size": replay_buffer._size,
-                "Goal threshold": goal_threshold,
-            })
-
-    # ── Final save ───────────────────────────────────────────────────────────
-    final_dir = os.path.join(POLICY_FOLDER, "final")
-    save_checkpoint(agent, replay_buffer, final_dir, FLAGS.max_steps)
-    print(f"\nTraining complete. Final checkpoint saved to {final_dir}")
-
-    env.close()
-
-
-if __name__ == "__main__":
-    app.run(main)

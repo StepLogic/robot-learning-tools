@@ -130,20 +130,24 @@ class VideoRecorder(gym.Wrapper):
     In human-render mode, captures the composed debug view.
     """
 
-    def __init__(self, env, video_dir: str, fps: int = 30,
-                 record_episodes: bool = False):
+    def __init__(self, env, video_dir: str, fps: int = 30):
         super().__init__(env)
         self.video_dir = video_dir
         self.fps = fps
-        self.record_episodes = record_episodes
         os.makedirs(video_dir, exist_ok=True)
         self._recording = False
+        self._record_next = False
         self._frames = []
         self._episode_count = 0
 
     def start_recording(self):
+        """Start recording immediately (captures frames from next step/reset)."""
         self._recording = True
         self._frames = []
+
+    def record_next_episode(self):
+        """Record the next complete episode from reset to termination."""
+        self._record_next = True
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
@@ -151,16 +155,23 @@ class VideoRecorder(gym.Wrapper):
             frame = self._get_display_frame(obs, info)
             if frame is not None:
                 self._frames.append(frame)
-        if (self.record_episodes and self._recording
-                and (terminated or truncated)):
+        if self._recording and (terminated or truncated):
             self._episode_count += 1
             self.save(f"episode_{self._episode_count:04d}.mp4")
             self._frames = []
+            self._recording = False
         return obs, reward, terminated, truncated, info
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         if self._recording and len(self._frames) < 3000:
+            frame = self._get_display_frame(obs, info)
+            if frame is not None:
+                self._frames.append(frame)
+        if self._record_next:
+            self._recording = True
+            self._frames = []
+            self._record_next = False
             frame = self._get_display_frame(obs, info)
             if frame is not None:
                 self._frames.append(frame)

@@ -124,7 +124,6 @@ class TrainConfig:
     start_training = 1000
     pretrained_checkpoint = None
     video_interval = 0
-    video_length = 0
     log_interval = 1000
     batch_size = 512
     checkpoint_interval = 1000
@@ -164,7 +163,6 @@ env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
 env = GoalImageWrapper(env, encoder=shared_encoder)
 goal_threshold = 2.0
 env = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
-env = VideoRecorder(env, video_dir="test_videos", record_episodes=True)
 env = RecordEpisodeStatistics(env)
 env = TimeLimit(env, max_episode_steps=TrainConfig.max_episode_steps)
 kwargs = drq_default.get_config()
@@ -212,12 +210,13 @@ timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 log_dir = os.path.join(TrainConfig.save_dir, f"habitat_nav_{timestamp}")
 logger = Logger(log_dir)
 
-# ── Video recording ──────────────────────────────────────────────────────
+# ── Video recording (progress monitoring) ───────────────────────────────
 video_rec = None
 if TrainConfig.video_interval > 0:
     video_dir = os.path.join(log_dir, "videos")
     video_rec = VideoRecorder(env, video_dir=video_dir)
-    env = video_rec  # wrap so env.step/reset captures frames
+    env = video_rec  # wrap so step/reset capture frames
+    print(f"[Video] Recording full episodes every {TrainConfig.video_interval} steps → {video_dir}")
 
 # ── Training loop ────────────────────────────────────────────────────────
 obs, info = env.reset()
@@ -226,8 +225,6 @@ episode_length = 0
 episode_distance = 0.0
 episode_start_pos = info.get("pos", np.zeros(3)).copy()
 episode_prev_pos = episode_start_pos.copy()
-video_recording = False
-video_step_count = 0
 
 # Episode buffer for HER
 episode_transitions = []
@@ -309,16 +306,8 @@ for step in pbar:
         print(f"[Checkpoint] Saved at step {step:,}")
 
     # ── Video recording ──────────────────────────────────────────────────
-    if video_rec is not None:
-        if not video_recording and step % TrainConfig.video_interval == 0:
-            video_rec.start_recording()
-            video_recording = True
-            video_step_count = 0
-        if video_recording:
-            video_step_count += 1
-            if video_step_count >= TrainConfig.video_length:
-                video_rec.stop_and_save(f"step_{step:07d}.mp4")
-                video_recording = False
+    if video_rec is not None and step > 0 and step % TrainConfig.video_interval == 0:
+        video_rec.record_next_episode()
 
     # ── Progress ──────────────────────────────────────────────────────────
     if step % TrainConfig.log_interval == 0:
