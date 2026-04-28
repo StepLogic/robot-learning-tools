@@ -126,7 +126,7 @@ class TrainConfig:
     pretrained_checkpoint = None
     video_interval = 1000
     log_interval = 1000
-    batch_size = 512
+    batch_size = 128
     checkpoint_interval = 1000
     save_dir = "./logs/"
     tqdm = True

@@ -53,7 +53,7 @@ class HabitatRewardWrapper(gym.Wrapper):
     def step(self, action):
         obs, _, terminated, truncated, info = self.env.step(action)
 
-        reward = -1e-3
+        reward = -1
 
         # # Distance improvement toward goal
         # curr_distance = info["distance_to_goal"]
@@ -83,7 +83,7 @@ class HabitatRewardWrapper(gym.Wrapper):
         # reward -= float(np.mean(self.steering_hist))
         # Goal reached
         if info["habitat_success"] > 0.0:
-            reward += 10
+            reward += 1000
             print("Goal Reached")
             terminated = True
 
