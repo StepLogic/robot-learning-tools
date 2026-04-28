@@ -17,18 +17,12 @@ from habitat_wrappers import HabitatRewardWrapper, VideoRecorder
 # ── Headless / HPC env vars (before any habitat imports) ──────────────────
 os.environ.pop("DISPLAY", None)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("MAGNUM_GPU_VALIDATION", "0")
 
 import argparse
-from collections import deque
-from datetime import datetime
 import faulthandler
 import flax
 import importlib.util
-import numpy as np
-
 import torch
-import tqdm
 
 from jaxrl2.agents import DrQLearner
 from jaxrl2.data import ReplayBuffer
@@ -411,5 +405,9 @@ def main(args):
 
 
 if __name__ == "__main__":
+    habitat_cfg = HabitatNavConfig(headless=True)
+    # EnvClass = HabitatNavEnv
+    render_mode = "rgb_array"
+    env = HabitatNavEnv(config=habitat_cfg, render_mode=render_mode)
     args = _parse_args()
     main(args)
