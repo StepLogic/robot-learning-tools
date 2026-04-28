@@ -121,10 +121,10 @@ class VideoRecorder(gym.Wrapper):
     """Records episode frames and writes MP4 videos to disk.
 
     Supports two modes:
-      - Step-interval: start/stop recording at fixed step intervals
-        (controlled externally via start_recording / stop_and_save).
-      - Episode: automatically record complete episodes when
-        record_episodes=True, saving on termination.
+      - Manual: start/stop via start_recording() / stop_and_save().
+      - Periodic: call record_next_episode() to capture the next
+        complete episode from reset to termination, auto-saving on
+        episode end.
 
     In headless (rgb_array) mode, captures the raw RGB observation.
     In human-render mode, captures the composed debug view.
