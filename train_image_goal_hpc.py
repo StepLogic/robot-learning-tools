@@ -119,6 +119,7 @@ class TrainConfig:
     goal_distance_scale = 3.0
     goal_max_distance = 10.0
     randomize_scenes = True
+    held_out_scenes = ["Airport", "Skokloster-castle", "van-gogh-room"]
     replay_buffer_size = int(1e6)
     max_episode_steps = 3000
     start_training = 1000
@@ -148,7 +149,13 @@ habitat_cfg = HabitatNavConfig(
         goal_distance_scale=TrainConfig.goal_distance_scale,
         goal_max_distance=TrainConfig.goal_max_distance,
         randomize_scenes=TrainConfig.randomize_scenes,
+        held_out_scenes=TrainConfig.held_out_scenes,
     )
+
+# Log scene info
+scene_paths = habitat_cfg.get_scene_paths()
+print(f"[Scenes] Training on {len(scene_paths)} scenes"
+      f"{' (held out: ' + ', '.join(TrainConfig.held_out_scenes) + ')' if TrainConfig.held_out_scenes else ''}")
 
 env = HabitatNavEnv(habitat_cfg, render_mode="rgb_array")
 env = StackingWrapper(env, num_stack=3, image_format="rgb")

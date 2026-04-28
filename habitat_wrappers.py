@@ -66,9 +66,9 @@ class HabitatRewardWrapper(gym.Wrapper):
         # # print(("delta_x"),delta_x)
         # # self.deltas.append(delta_x[0])
         # # Throttle bonus: encourage forward driving
-        # mean_throttle = float(np.mean(self.unwrapped._rl_env._throttle_history))
-        # if  mean_throttle > 0.1:
-        #     reward += 0.1
+        mean_throttle = float(np.mean(self.unwrapped._rl_env._throttle_history))
+        if  mean_throttle < 0.1:
+            reward -= 10
 
         # reward += float(np.linalg.norm(habitat_distance_to_goal_reward))
         # reward += float(np.linalg.norm(delta_x))
@@ -89,7 +89,7 @@ class HabitatRewardWrapper(gym.Wrapper):
 
         # # # Collision penalty
         if info.get("hit", False):
-            reward -= 10
+            reward -= 10.0
             # truncated = True
 
         # Steering penalty (encourages straighter paths)
