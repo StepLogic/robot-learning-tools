@@ -162,22 +162,23 @@ def main(args):
 
     # ── Environment ───────────────────────────────────────────────────────────
     print("Building Habitat environment…")
-    habitat_cfg = HabitatNavConfig(
-        scene_path=args.scene_path,
-        scene_dataset_path=args.scene_dataset_path,
-        control_frequency=args.control_frequency,
-        frame_skip=args.frame_skip,
-        max_linear_velocity=args.max_linear_velocity,
-        max_angular_velocity=args.max_angular_velocity,
-        imu_noise_std=args.imu_noise_std,
-        gpu_device_id=args.gpu_device_id,
-        seed=args.seed,
-        debug_render=args.debug_render,
-        headless=not args.debug_render,
-        goal_distance_scale=args.goal_distance_scale,
-        goal_max_distance=args.goal_max_distance,
-        randomize_scenes=args.randomize_scenes,
-    )
+    # habitat_cfg = HabitatNavConfig(
+    #     scene_path=args.scene_path,
+    #     scene_dataset_path=args.scene_dataset_path,
+    #     control_frequency=args.control_frequency,
+    #     frame_skip=args.frame_skip,
+    #     max_linear_velocity=args.max_linear_velocity,
+    #     max_angular_velocity=args.max_angular_velocity,
+    #     imu_noise_std=args.imu_noise_std,
+    #     gpu_device_id=args.gpu_device_id,
+    #     seed=args.seed,
+    #     debug_render=args.debug_render,
+    #     headless=not args.debug_render,
+    #     goal_distance_scale=args.goal_distance_scale,
+    #     goal_max_distance=args.goal_max_distance,
+    #     randomize_scenes=args.randomize_scenes,
+    # )
+    habitat_cfg = HabitatNavConfig(headless=True)
     if args.randomize_scenes:
         print(f"Scene randomization: {len(habitat_cfg.get_scene_paths())} scenes available")
 
