@@ -12,6 +12,8 @@ Usage on HPC:
 import os
 import sys
 
+from train_habitat_her import HabitatRewardWrapper
+
 # Apply headless settings first, before any habitat imports
 os.environ.pop("DISPLAY", None)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -57,9 +59,32 @@ print("\n=== Test 2: habitat-lab HabitatEnv (HabitatNavEnv) ===")
 try:
     from habitat_env import HabitatNavEnv
     from configs.habitat_config import HabitatNavConfig
-
+    from racer_imu_env import StackingWrapper
+    from wrappers import (
+        Logger,
+        MobileNetFeatureWrapper,
+        MobileNetV3Encoder,
+        GoalImageWrapper,
+        load_checkpoint,
+        save_checkpoint,
+    )
+    device = "cuda"
     cfg = HabitatNavConfig(headless=True)
     env = HabitatNavEnv(cfg, render_mode="rgb_array")
+    env = StackingWrapper(env, num_stack=3, image_format="rgb")
+
+    # Shared MobileNetV3 encoder for current obs and goal
+    shared_encoder = MobileNetV3Encoder(
+        device=device,
+        num_blocks=13,
+        input_size=84,
+    )
+    env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
+    env = GoalImageWrapper(env, encoder=shared_encoder)
+    goal_threshold = 2.0
+    reward_wrapper = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
+    env = reward_wrapper
+
     print("  HabitatNavEnv created: OK")
 
     obs, info = env.reset()

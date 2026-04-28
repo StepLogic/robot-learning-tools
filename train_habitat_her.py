@@ -11,8 +11,11 @@ Wrapper stack:
   → GoalImageWrapper → HabitatRewardWrapper → RecordEpisodeStatistics → TimeLimit
 """
 import os
+
+# ── Headless / HPC env vars (before any habitat imports) ──────────────────
 os.environ.pop("DISPLAY", None)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("MAGNUM_GPU_VALIDATION", "0")
 
 import pickle
 import random
@@ -69,7 +72,8 @@ flags.DEFINE_float("max_linear_velocity", 0.5, "Max forward velocity (m/s).")
 flags.DEFINE_float("max_angular_velocity", 1.5, "Max turning rate (rad/s).")
 flags.DEFINE_float("imu_noise_std", 0.0, "Gaussian noise std for synthesized IMU.")
 flags.DEFINE_integer("gpu_device_id", 0, "Habitat-Sim GPU device ID.")
-flags.DEFINE_boolean("debug_render", True, "Show cv2 debug window.")
+flags.DEFINE_boolean("debug_render", False,
+                    "Show cv2 debug window (disables headless mode).")
 
 # ── Training flags ───────────────────────────────────────────────────────────
 flags.DEFINE_string("save_dir", "./logs/", "Tensorboard log dir.")
@@ -371,10 +375,9 @@ def main(_):
     if FLAGS.randomize_scenes:
         print(f"Scene randomization: {len(habitat_cfg.get_scene_paths())} scenes available")
 
-    EnvClass = HabitatNavEnv
+    # EnvClass = HabitatNavEnv
     render_mode = "human" if FLAGS.debug_render else "rgb_array"
-    env = EnvClass(config=habitat_cfg, render_mode=render_mode)
-    # env = EnvCompatibility(env)
+    env = HabitatNavEnv(config=habitat_cfg, render_mode=render_mode)
     env = StackingWrapper(env, num_stack=FLAGS.frame_stack, image_format="rgb")
 
     # Shared MobileNetV3 encoder for current obs and goal
