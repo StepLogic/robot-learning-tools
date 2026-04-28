@@ -69,7 +69,7 @@ try:
         save_checkpoint,
     )
     from habitat_wrappers import HabitatRewardWrapper
-    # device = "cuda"
+    device = "cuda"
     cfg = HabitatNavConfig(headless=True)
     env = HabitatNavEnv(cfg, render_mode="rgb_array")
     env = StackingWrapper(env, num_stack=3, image_format="rgb")
