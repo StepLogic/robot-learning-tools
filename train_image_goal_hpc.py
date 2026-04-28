@@ -13,8 +13,11 @@ from collections import deque
 import datetime
 import os
 import sys
-from configs import drq_default
+
+import numpy as np
 import tqdm
+from configs import drq_default
+
 from habitat_wrappers import VideoRecorder
 
 
@@ -32,7 +35,6 @@ print(f"MAGNUM_GPU_VALIDATION={os.environ.get('MAGNUM_GPU_VALIDATION', '<unset>'
 print("\n=== Test 1: Raw habitat_sim.Simulator ===")
 try:
     import habitat_sim
-    import numpy as np
 
     backend_cfg = habitat_sim.SimulatorConfiguration()
     backend_cfg.scene_id = "data/gibson/Cantwell.glb"
@@ -126,6 +128,9 @@ class TrainConfig:
     log_interval = 1000
     batch_size = 64
     checkpoint_interval = 1000
+    save_dir = "./logs/"
+    tqdm = True
+    max_steps = int(1e6)
 
 
 device = "cuda"
@@ -145,7 +150,8 @@ habitat_cfg = HabitatNavConfig(
         goal_max_distance=TrainConfig.goal_max_distance,
         randomize_scenes=TrainConfig.randomize_scenes,
     )
-env = HabitatNavEnv(cfg, render_mode="rgb_array")
+
+env = HabitatNavEnv(habitat_cfg, render_mode="rgb_array")
 env = StackingWrapper(env, num_stack=3, image_format="rgb")
 
 # # Shared MobileNetV3 encoder for current obs and goal
@@ -202,7 +208,7 @@ ou_noise = OrnsteinUhlenbeckActionNoise(
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 log_dir = os.path.join(TrainConfig.save_dir, f"habitat_nav_{timestamp}")
 logger = Logger(log_dir)
 
@@ -288,7 +294,7 @@ for step in pbar:
         info = next_info
 
     # ── Gradient update ──────────────────────────────────────────────────
-    if step >= TrainConfig.start_training and replay_buffer._size >= TrainConfig.batch_size:
+    if step >= TrainConfig.start_training and len(replay_buffer) >= TrainConfig.batch_size:
         batch = replay_buffer.sample(TrainConfig.batch_size)
 
         update_info = agent.update(batch)
@@ -318,13 +324,13 @@ for step in pbar:
     if step % TrainConfig.log_interval == 0:
         pbar.set_postfix({
             "step": step,
-            "buffer": replay_buffer._size,
+            "buffer": len(replay_buffer),
             "ep_rew": f"{np.mean(logger.episode_returns):.1f}" if logger.episode_returns else "0.0",
             "sr": f"{np.mean(episode_successes):.0%}" if episode_successes else "0%",
             "dist": f"{np.mean(episode_distances):.2f}m" if episode_distances else "0m",
         })
         logger.print_status(step, TrainConfig.max_steps, extra_stats={
-            "Buffer size": replay_buffer._size,
+            "Buffer size": len(replay_buffer),
             "Goal threshold": goal_threshold,
         })
 
