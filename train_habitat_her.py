@@ -144,11 +144,11 @@ def main(_):
     print("DrQ Habitat Image-Goal Nav | Siamese MobileNetV3")
     print("=" * 70 + "\n")
 
-    np.random.seed(FLAGS.seed)
-    random.seed(FLAGS.seed)
-    torch.manual_seed(FLAGS.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(FLAGS.seed)
+    # np.random.seed(FLAGS.seed)
+    # random.seed(FLAGS.seed)
+    # torch.manual_seed(FLAGS.seed)
+    # if torch.cuda.is_available():
+    #     torch.cuda.manual_seed(FLAGS.seed)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
@@ -192,6 +192,11 @@ def main(_):
     env = RecordEpisodeStatistics(env)
     env = TimeLimit(env, max_episode_steps=FLAGS.max_episode_steps)
 
+    # ── Training loop ────────────────────────────────────────────────────────
+    obs, info = env.reset()
+
+
+    
     print(f"Observation space : {env.observation_space}")
     print(f"Action space      : {env.action_space}")
 
@@ -228,10 +233,6 @@ def main(_):
 
     # Optional expert buffer
     expert_buf = None
-    if FLAGS.expert_buffer_path and os.path.exists(FLAGS.expert_buffer_path):
-        with open(FLAGS.expert_buffer_path, "rb") as f:
-            expert_buf = pickle.load(f)
-        print(f"[Expert] Loaded expert buffer: {expert_buf._size} transitions")
 
     # ── Noise ─────────────────────────────────────────────────────────────────
     ou_noise = OrnsteinUhlenbeckActionNoise(
@@ -252,8 +253,6 @@ def main(_):
         video_rec = VideoRecorder(env, video_dir=video_dir)
         env = video_rec  # wrap so env.step/reset captures frames
 
-    # ── Training loop ────────────────────────────────────────────────────────
-    obs, info = env.reset()
     episode_reward = 0.0
     episode_length = 0
     episode_distance = 0.0

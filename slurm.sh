@@ -63,8 +63,6 @@ mkdir -p logs
 # Batch size     : 256 (2x default — larger gradient batches, more stable)
 # Start training : 10K (2x default — let buffer fill before updates)
 # ==============================================================================
-echo "=== GPU INFO ==="
-nvidia-smi
 echo "=== DISPLAY (will unset for headless EGL) ==="
 echo $DISPLAY
 unset DISPLAY
