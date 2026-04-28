@@ -118,7 +118,7 @@ class TrainConfig:
     headless = True
     goal_distance_scale = 3.0
     goal_max_distance = 10.0
-    randomize_scenes = False
+    randomize_scenes = True
     replay_buffer_size = int(1e6)
     max_episode_steps = 3000
     start_training = 1000

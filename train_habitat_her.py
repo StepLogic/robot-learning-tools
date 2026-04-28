@@ -160,7 +160,7 @@ env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
 env = GoalImageWrapper(env, encoder=shared_encoder)
 goal_threshold = 2.0
 env = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
-env = VideoRecorder(env, video_dir="test_videos", record_episodes=True)
+env = VideoRecorder(env, video_dir="test_videos")
 env = RecordEpisodeStatistics(env)
 env = TimeLimit(env, max_episode_steps=TrainConfig.max_episode_steps)
 kwargs = drq_default.get_config()
