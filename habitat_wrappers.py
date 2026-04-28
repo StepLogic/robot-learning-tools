@@ -89,8 +89,8 @@ class HabitatRewardWrapper(gym.Wrapper):
 
         # # # Collision penalty
         if info.get("hit", False):
-            reward -= 0.01
-            terminated = True
+            reward -= 10
+            # truncated = True
 
         # Steering penalty (encourages straighter paths)
         # reward -= self.k_steering * abs(action[0])
