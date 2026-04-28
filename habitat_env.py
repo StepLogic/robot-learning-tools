@@ -23,6 +23,7 @@ Info keys:    velocity, collision, blocked, forward_vel, actual_vel, hit,
 from collections import deque
 import logging
 import math
+import os
 import random
 from typing import Optional
 
@@ -182,6 +183,12 @@ class HabitatNavEnv(gym.Env):
         self._cfg = config or HabitatNavConfig()
         self.render_mode = render_mode
         self._imu_dim = 10
+
+        # ── Headless HPC support ───────────────────────────────────────
+        if self._cfg.headless:
+            os.environ.pop("DISPLAY", None)
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+            os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
         H, W = self._cfg.image_height, self._cfg.image_width
 
@@ -429,9 +436,7 @@ class HabitatNavEnv(gym.Env):
         episode = self._sample_episode()
         self._env._current_episode = episode
         self._env._episode_over = False
-        obs = self._env.reset()
-        # Reset through habitat-lab task (sensors, measures init)
-        obs = self._env._task.reset(episode=episode)
+        self._env.reset()
 
         # Teleport agent to sampled start (task.reset doesn't move agent
         # when we bypass Env.reconfigure)

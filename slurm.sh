@@ -65,8 +65,11 @@ mkdir -p logs
 # ==============================================================================
 echo "=== GPU INFO ==="
 nvidia-smi
-echo "=== DISPLAY ==="
+echo "=== DISPLAY (will unset for headless EGL) ==="
 echo $DISPLAY
+unset DISPLAY
+export PYOPENGL_PLATFORM=egl
+export QT_QPA_PLATFORM=offscreen
 echo "=== EGL CHECK ==="
 python -c "
 import ctypes

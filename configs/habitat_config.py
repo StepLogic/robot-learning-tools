@@ -22,6 +22,7 @@ class HabitatNavConfig:
     gpu_device_id: int = 0
     imu_noise_std: float = 0.0       # Gaussian noise std for synthesized IMU
     debug_render: bool = False        # Show cv2 debug window with agent view
+    headless: bool = False           # Force EGL headless rendering (unset DISPLAY, suppress QT windows)
     goal_radius: float = 1.0         # Success radius for DistanceToGoal
     goal_distance_scale: float = 3.0  # Exponential rate for goal distance (meters, lower = closer goals)
     goal_max_distance: float = 10.0   # Cap on sampled goal distance (meters)

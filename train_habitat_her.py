@@ -359,6 +359,7 @@ def main(_):
         gpu_device_id=FLAGS.gpu_device_id,
         seed=FLAGS.seed,
         debug_render=FLAGS.debug_render,
+        headless=not FLAGS.debug_render,
         goal_distance_scale=FLAGS.goal_distance_scale,
         goal_max_distance=FLAGS.goal_max_distance,
         randomize_scenes=FLAGS.randomize_scenes,
