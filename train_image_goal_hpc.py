@@ -15,9 +15,7 @@ import os
 import sys
 from configs import drq_default
 import tqdm
-
 from habitat_wrappers import VideoRecorder
-from jaxrl2.examples.train_offline import TrainConfig
 
 
 # Apply headless settings first, before any habitat imports
