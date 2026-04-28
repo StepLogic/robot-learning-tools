@@ -12,6 +12,8 @@ Wrapper stack:
 """
 import os
 
+from habitat_wrappers import HabitatRewardWrapper, VideoRecorder
+
 # ── Headless / HPC env vars (before any habitat imports) ──────────────────
 os.environ.pop("DISPLAY", None)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -186,9 +188,7 @@ def main(_):
     env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
     env = GoalImageWrapper(env, encoder=shared_encoder)
     goal_threshold = 2.0
-    reward_wrapper = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
-    env = reward_wrapper
-
+    env = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
     env = RecordEpisodeStatistics(env)
     env = TimeLimit(env, max_episode_steps=FLAGS.max_episode_steps)
 
@@ -199,8 +199,7 @@ def main(_):
     # not geodesic meters.  When not explicitly set, use a reasonable default
     # based on the feature dimensionality.
     her_goal_threshold = FLAGS.her_goal_threshold if FLAGS.her_goal_threshold else 1.0
-    k_goal = reward_wrapper.k_goal
-
+    k_goal = 10
     print(f"Observation space : {env.observation_space}")
     print(f"Action space      : {env.action_space}")
     print(f"HER ratio         : {her_ratio} (threshold: {her_goal_threshold})\n")
