@@ -53,7 +53,7 @@ class HabitatRewardWrapper(gym.Wrapper):
     def step(self, action):
         obs, _, terminated, truncated, info = self.env.step(action)
 
-        reward = -1.0
+        reward = -1e-3
 
         # # Distance improvement toward goal
         # curr_distance = info["distance_to_goal"]
@@ -66,9 +66,9 @@ class HabitatRewardWrapper(gym.Wrapper):
         # # print(("delta_x"),delta_x)
         # # self.deltas.append(delta_x[0])
         # # Throttle bonus: encourage forward driving
-        mean_throttle = float(np.mean(self.unwrapped._rl_env._throttle_history))
+        mean_throttle = float(np.mean(self.unwrapped._throttle_history))
         if  mean_throttle < 0.1:
-            reward -= 10
+            reward -= 1
 
         # reward += float(np.linalg.norm(habitat_distance_to_goal_reward))
         # reward += float(np.linalg.norm(delta_x))
@@ -83,13 +83,13 @@ class HabitatRewardWrapper(gym.Wrapper):
         # reward -= float(np.mean(self.steering_hist))
         # Goal reached
         if info["habitat_success"] > 0.0:
-            reward += self.k_goal
+            reward += 10
             print("Goal Reached")
             terminated = True
 
         # # # Collision penalty
         if info.get("hit", False):
-            reward -= 10.0
+            reward -= 1.0
             # truncated = True
 
         # Steering penalty (encourages straighter paths)
