@@ -19,13 +19,13 @@ os.environ.pop("DISPLAY", None)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("MAGNUM_GPU_VALIDATION", "0")
 
+import argparse
 from collections import deque
 from datetime import datetime
 import faulthandler
 import flax
+import importlib.util
 import numpy as np
-from absl import app, flags
-from ml_collections import config_flags
 
 import torch
 import tqdm
@@ -48,70 +48,77 @@ from wrappers import (
     save_checkpoint,
 )
 
+
 faulthandler.enable()
 flax.config.update("flax_use_orbax_checkpointing", True)
-FLAGS = flags.FLAGS
-
-# ── Environment flags ────────────────────────────────────────────────────────
-flags.DEFINE_string("env_name", "HabitatImageNav-v0", "Environment name.")
-flags.DEFINE_string("scene_path", "data/gibson/Cantwell.glb",
-                    "Path to Gibson .glb scene file.")
-flags.DEFINE_string("scene_dataset_path", "",
-                    "Path to Gibson scene dataset directory (empty for standalone GLB).")
-flags.DEFINE_boolean("randomize_scenes", False,
-                    "Randomly select a different Gibson scene each episode.")
-flags.DEFINE_integer("control_frequency", 5, "Habitat control frequency (Hz).")
-flags.DEFINE_integer("frame_skip", 6, "Physics integration steps per action.")
-flags.DEFINE_float("max_linear_velocity", 0.5, "Max forward velocity (m/s).")
-flags.DEFINE_float("max_angular_velocity", 1.5, "Max turning rate (rad/s).")
-flags.DEFINE_float("imu_noise_std", 0.0, "Gaussian noise std for synthesized IMU.")
-flags.DEFINE_integer("gpu_device_id", 0, "Habitat-Sim GPU device ID.")
-flags.DEFINE_boolean("debug_render", False,
-                    "Show cv2 debug window (disables headless mode).")
-
-# ── Training flags ───────────────────────────────────────────────────────────
-flags.DEFINE_string("save_dir", "./logs/", "Tensorboard log dir.")
-flags.DEFINE_integer("seed", 42, "Random seed.")
-flags.DEFINE_integer("log_interval", 1000, "Logging interval.")
-flags.DEFINE_integer("eval_interval", 50000, "Eval interval (not used yet).")
-flags.DEFINE_integer("checkpoint_interval", 5000, "Checkpoint interval.")
-flags.DEFINE_integer("video_interval", 50000, "Save a video every N steps (0 = disabled).")
-flags.DEFINE_integer("video_length", 500, "Number of steps per video clip.")
-flags.DEFINE_integer("batch_size", 128, "Batch size.")
-flags.DEFINE_integer("max_steps", int(1e6), "Total training steps.")
-flags.DEFINE_integer("start_training", int(5e3), "Steps before updates begin.")
-flags.DEFINE_integer("replay_buffer_size", int(1e5), "Replay buffer capacity.")
-flags.DEFINE_boolean("tqdm", True, "Show tqdm progress bar.")
-flags.DEFINE_integer("frame_stack", 3, "Frame stack depth.")
-flags.DEFINE_integer("mobilenet_blocks", 13, "MobileNetV3 blocks (full network).")
-flags.DEFINE_integer("mobilenet_input_size", 84, "MobileNetV3 input size.")
-
-flags.DEFINE_float("goal_distance_scale", 3.0,
-                    "Exponential rate for goal distance (meters, lower = closer goals).")
-flags.DEFINE_float("goal_max_distance", 10.0,
-                    "Cap on sampled goal distance (meters).")
-flags.DEFINE_integer("max_episode_steps", 1000, "Max steps per episode.")
-
-# ── Expert / teleop flags ────────────────────────────────────────────────────
-flags.DEFINE_string("pretrained_checkpoint", "",
-                    "Path to pre-trained checkpoint (empty = no preload).")
-flags.DEFINE_float("expert_sample_ratio", 0.0,
-                   "Fraction of batch from expert buffer (0 = disabled).")
-flags.DEFINE_string("expert_buffer_path", "",
-                    "Path to expert replay buffer .pkl (empty = none).")
-
-# ── HER flags ────────────────────────────────────────────────────────────────
-flags.DEFINE_float("her_ratio", 0.0,
-                   "Fraction of episode transitions to relabel with HER (0 = disabled).")
-flags.DEFINE_float("her_goal_threshold", None,
-                   "Feature-distance threshold for HER goal reward (None = auto from goal_threshold).")
-
-config_flags.DEFINE_config_file(
-    "config", "./configs/drq_default.py",
-    "Training hyperparameter config.", lock_config=False,
-)
-
 POLICY_FOLDER = "robot_policy"
+
+def _parse_args():
+    """Parse command-line arguments and load the ml_collections config file."""
+    parser = argparse.ArgumentParser(
+        description="DrQ Habitat Image-Goal Navigation"
+    )
+
+    # ── Environment flags ────────────────────────────────────────────────
+    parser.add_argument("--env_name", default="HabitatImageNav-v0")
+    parser.add_argument("--scene_path", default="data/gibson/Cantwell.glb")
+    parser.add_argument("--scene_dataset_path", default="")
+    parser.add_argument("--randomize_scenes", action="store_true")
+    parser.add_argument("--control_frequency", type=int, default=5)
+    parser.add_argument("--frame_skip", type=int, default=6)
+    parser.add_argument("--max_linear_velocity", type=float, default=0.5)
+    parser.add_argument("--max_angular_velocity", type=float, default=1.5)
+    parser.add_argument("--imu_noise_std", type=float, default=0.0)
+    parser.add_argument("--gpu_device_id", type=int, default=0)
+    parser.add_argument("--debug_render", action="store_true")
+
+    # ── Training flags ───────────────────────────────────────────────────
+    parser.add_argument("--save_dir", default="./logs/")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--log_interval", type=int, default=1000)
+    parser.add_argument("--eval_interval", type=int, default=50000)
+    parser.add_argument("--checkpoint_interval", type=int, default=5000)
+    parser.add_argument("--video_interval", type=int, default=50000)
+    parser.add_argument("--video_length", type=int, default=500)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--max_steps", type=int, default=int(1e6))
+    parser.add_argument("--start_training", type=int, default=int(5e3))
+    parser.add_argument("--replay_buffer_size", type=int, default=int(1e5))
+    parser.add_argument("--no-tqdm", action="store_false", dest="tqdm")
+    parser.add_argument("--tqdm", action="store_true", default=True,
+                        help="Show tqdm progress bar.")
+    parser.add_argument("--frame_stack", type=int, default=3)
+    parser.add_argument("--mobilenet_blocks", type=int, default=13)
+    parser.add_argument("--mobilenet_input_size", type=int, default=84)
+    parser.add_argument("--goal_distance_scale", type=float, default=3.0)
+    parser.add_argument("--goal_max_distance", type=float, default=10.0)
+    parser.add_argument("--max_episode_steps", type=int, default=1000)
+
+    # ── Expert / teleop flags ────────────────────────────────────────────
+    parser.add_argument("--pretrained_checkpoint", default="")
+    parser.add_argument("--expert_sample_ratio", type=float, default=0.0)
+    parser.add_argument("--expert_buffer_path", default="")
+
+    # ── HER flags ────────────────────────────────────────────────────────
+    parser.add_argument("--her_ratio", type=float, default=0.0)
+    parser.add_argument("--her_goal_threshold", type=float, default=None)
+
+    # ── Config file (ml_collections .py) ─────────────────────────────────
+    parser.add_argument("--config", default="./configs/drq_default.py",
+                        help="Training hyperparameter config file (.py).")
+
+    args = parser.parse_args()
+
+    # Load ml_collections config from the .py file
+    if args.config:
+        spec = importlib.util.spec_from_file_location("train_config", args.config)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        args.config = mod.get_config()
+
+    return args
+
+
 def _find_latest_checkpoint(folder):
     """Find the latest checkpoint in a folder, return (path, step) or (None, 0)."""
     if not os.path.isdir(folder):
@@ -131,16 +138,16 @@ def _find_latest_checkpoint(folder):
 
 
 
-def main(_):
+def main(args):
     print("\n" + "=" * 70)
     print("DrQ Habitat Image-Goal Nav | Siamese MobileNetV3")
     print("=" * 70 + "\n")
 
-    # np.random.seed(FLAGS.seed)
-    # random.seed(FLAGS.seed)
-    # torch.manual_seed(FLAGS.seed)
+    # np.random.seed(args.seed)
+    # random.seed(args.seed)
+    # torch.manual_seed(args.seed)
     # if torch.cuda.is_available():
-    #     torch.cuda.manual_seed(FLAGS.seed)
+    #     torch.cuda.manual_seed(args.seed)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
@@ -148,48 +155,48 @@ def main(_):
     # ── Environment ───────────────────────────────────────────────────────────
     print("Building Habitat environment…")
     habitat_cfg = HabitatNavConfig(
-        scene_path=FLAGS.scene_path,
-        scene_dataset_path=FLAGS.scene_dataset_path,
-        control_frequency=FLAGS.control_frequency,
-        frame_skip=FLAGS.frame_skip,
-        max_linear_velocity=FLAGS.max_linear_velocity,
-        max_angular_velocity=FLAGS.max_angular_velocity,
-        imu_noise_std=FLAGS.imu_noise_std,
-        gpu_device_id=FLAGS.gpu_device_id,
-        seed=FLAGS.seed,
-        debug_render=FLAGS.debug_render,
-        headless=not FLAGS.debug_render,
-        goal_distance_scale=FLAGS.goal_distance_scale,
-        goal_max_distance=FLAGS.goal_max_distance,
-        randomize_scenes=FLAGS.randomize_scenes,
+        scene_path=args.scene_path,
+        scene_dataset_path=args.scene_dataset_path,
+        control_frequency=args.control_frequency,
+        frame_skip=args.frame_skip,
+        max_linear_velocity=args.max_linear_velocity,
+        max_angular_velocity=args.max_angular_velocity,
+        imu_noise_std=args.imu_noise_std,
+        gpu_device_id=args.gpu_device_id,
+        seed=args.seed,
+        debug_render=args.debug_render,
+        headless=not args.debug_render,
+        goal_distance_scale=args.goal_distance_scale,
+        goal_max_distance=args.goal_max_distance,
+        randomize_scenes=args.randomize_scenes,
     )
-    if FLAGS.randomize_scenes:
+    if args.randomize_scenes:
         print(f"Scene randomization: {len(habitat_cfg.get_scene_paths())} scenes available")
 
     # EnvClass = HabitatNavEnv
-    render_mode = "human" if FLAGS.debug_render else "rgb_array"
+    render_mode = "human" if args.debug_render else "rgb_array"
     env = HabitatNavEnv(config=habitat_cfg, render_mode=render_mode)
-    env = StackingWrapper(env, num_stack=FLAGS.frame_stack, image_format="rgb")
+    env = StackingWrapper(env, num_stack=args.frame_stack, image_format="rgb")
 
     # Shared MobileNetV3 encoder for current obs and goal
     shared_encoder = MobileNetV3Encoder(
         device=device,
-        num_blocks=FLAGS.mobilenet_blocks,
-        input_size=FLAGS.mobilenet_input_size,
+        num_blocks=args.mobilenet_blocks,
+        input_size=args.mobilenet_input_size,
     )
     env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
     env = GoalImageWrapper(env, encoder=shared_encoder)
     goal_threshold = 2.0
     env = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
     env = RecordEpisodeStatistics(env)
-    env = TimeLimit(env, max_episode_steps=FLAGS.max_episode_steps)
+    env = TimeLimit(env, max_episode_steps=args.max_episode_steps)
 
     print(f"Observation space : {env.observation_space}")
     print(f"Action space      : {env.action_space}")
 
-    kwargs = dict(FLAGS.config) if FLAGS.config else {}
+    kwargs = dict(args.config) if args.config else {}
     agent = DrQLearner(
-        FLAGS.seed,
+        args.seed,
         env.observation_space.sample(),
         env.action_space.sample(),
         **kwargs,
@@ -201,9 +208,9 @@ def main(_):
     if resume_path is not None:
         agent = load_checkpoint(agent, resume_path)
         print(f"[Checkpoint] Resumed from {resume_path} (step {resume_step:,})")
-    elif FLAGS.pretrained_checkpoint:
-        agent = load_checkpoint(agent, FLAGS.pretrained_checkpoint)
-        print(f"[Checkpoint] Loaded pre-trained from {FLAGS.pretrained_checkpoint}")
+    elif args.pretrained_checkpoint:
+        agent = load_checkpoint(agent, args.pretrained_checkpoint)
+        print(f"[Checkpoint] Loaded pre-trained from {args.pretrained_checkpoint}")
         resume_step = 0
     else:
         resume_step = 0
@@ -215,7 +222,7 @@ def main(_):
     replay_buffer = ReplayBuffer(
         env.observation_space,
         env.action_space,
-        FLAGS.replay_buffer_size,
+        args.replay_buffer_size,
     )
 
     # Optional expert buffer
@@ -230,12 +237,12 @@ def main(_):
 
     # ── Logging ───────────────────────────────────────────────────────────────
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = os.path.join(FLAGS.save_dir, f"habitat_nav_{timestamp}")
+    log_dir = os.path.join(args.save_dir, f"habitat_nav_{timestamp}")
     logger = Logger(log_dir)
 
     # ── Video recording ──────────────────────────────────────────────────────
     video_rec = None
-    if FLAGS.video_interval > 0:
+    if args.video_interval > 0:
         video_dir = os.path.join(log_dir, "videos")
         video_rec = VideoRecorder(env, video_dir=video_dir)
         env = video_rec  # wrap so env.step/reset captures frames
@@ -257,12 +264,12 @@ def main(_):
     episode_successes = deque(maxlen=100)
     episode_distances = deque(maxlen=100)
 
-    pbar = tqdm.tqdm(range(start_step, FLAGS.max_steps + 1),
-                     disable=not FLAGS.tqdm, desc="Training")
+    pbar = tqdm.tqdm(range(start_step, args.max_steps + 1),
+                     disable=not args.tqdm, desc="Training")
 
     for step in pbar:
         # ── Action selection ──────────────────────────────────────────────────
-        if step < FLAGS.start_training:
+        if step < args.start_training:
             action = env.action_space.sample()
         else:
             action = agent.sample_actions(obs)
@@ -321,13 +328,13 @@ def main(_):
             info = next_info
 
         # ── Gradient update ──────────────────────────────────────────────────
-        if step >= FLAGS.start_training and replay_buffer._size >= FLAGS.batch_size:
-            batch = replay_buffer.sample(FLAGS.batch_size)
+        if step >= args.start_training and replay_buffer._size >= args.batch_size:
+            batch = replay_buffer.sample(args.batch_size)
 
             # Mixed batch with expert data
-            if expert_buf is not None and FLAGS.expert_sample_ratio > 0:
-                n_expert = int(FLAGS.batch_size * FLAGS.expert_sample_ratio)
-                n_online = FLAGS.batch_size - n_expert
+            if expert_buf is not None and args.expert_sample_ratio > 0:
+                n_expert = int(args.batch_size * args.expert_sample_ratio)
+                n_online = args.batch_size - n_expert
                 online_batch = replay_buffer.sample(n_online)
                 expert_batch = expert_buf.sample(n_expert)
                 # Merge: unfreeze FrozenDicts, concatenate, refreeze
@@ -351,29 +358,29 @@ def main(_):
 
             update_info = agent.update(batch)
 
-            if step % FLAGS.log_interval == 0:
+            if step % args.log_interval == 0:
                 logger.log_training(update_info, step)
 
         # ── Checkpoint ───────────────────────────────────────────────────────
-        if step % FLAGS.checkpoint_interval == 0 and step > FLAGS.start_training:
+        if step % args.checkpoint_interval == 0 and step > args.start_training:
             ckpt_dir = os.path.join(POLICY_FOLDER, f"checkpoint_{step}")
             save_checkpoint(agent, replay_buffer, ckpt_dir, step)
             print(f"[Checkpoint] Saved at step {step:,}")
 
         # ── Video recording ──────────────────────────────────────────────────
         if video_rec is not None:
-            if not video_recording and step % FLAGS.video_interval == 0:
+            if not video_recording and step % args.video_interval == 0:
                 video_rec.start_recording()
                 video_recording = True
                 video_step_count = 0
             if video_recording:
                 video_step_count += 1
-                if video_step_count >= FLAGS.video_length:
+                if video_step_count >= args.video_length:
                     video_rec.stop_and_save(f"step_{step:07d}.mp4")
                     video_recording = False
 
         # ── Progress ──────────────────────────────────────────────────────────
-        if step % FLAGS.log_interval == 0:
+        if step % args.log_interval == 0:
             pbar.set_postfix({
                 "step": step,
                 "buffer": replay_buffer._size,
@@ -381,18 +388,19 @@ def main(_):
                 "sr": f"{np.mean(episode_successes):.0%}" if episode_successes else "0%",
                 "dist": f"{np.mean(episode_distances):.2f}m" if episode_distances else "0m",
             })
-            logger.print_status(step, FLAGS.max_steps, extra_stats={
+            logger.print_status(step, args.max_steps, extra_stats={
                 "Buffer size": replay_buffer._size,
                 "Goal threshold": goal_threshold,
             })
 
     # ── Final save ───────────────────────────────────────────────────────────
     final_dir = os.path.join(POLICY_FOLDER, "final")
-    save_checkpoint(agent, replay_buffer, final_dir, FLAGS.max_steps)
+    save_checkpoint(agent, replay_buffer, final_dir, args.max_steps)
     print(f"\nTraining complete. Final checkpoint saved to {final_dir}")
 
     env.close()
 
 
 if __name__ == "__main__":
-    app.run(main)
+    args = _parse_args()
+    main(args)
