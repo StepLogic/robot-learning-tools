@@ -15,7 +15,7 @@ import pickle
 import random
 from collections import deque
 from datetime import datetime
-
+import faulthandler
 import cv2
 import flax
 import jax
@@ -48,6 +48,7 @@ from wrappers import (
     save_checkpoint,
 )
 
+faulthandler.enable()
 flax.config.update("flax_use_orbax_checkpointing", True)
 FLAGS = flags.FLAGS
 

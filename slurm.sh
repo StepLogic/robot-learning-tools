@@ -17,7 +17,7 @@
 #SBATCH --time=96:00:00
 #SBATCH --gres=gpu:l40:1
 #SBATCH --output=logs/habitat_her_%j.log
-export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/home/egyaase/robot-learning-tools/NVIDIA-Linux-x86_64-545.23.06"
+# export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/home/egyaase/robot-learning-tools/NVIDIA-Linux-x86_64-545.23.06"
 # ==============================================================================
 # Environment Setup
 # ==============================================================================
@@ -68,7 +68,8 @@ nvidia-smi
 echo "=== DISPLAY (will unset for headless EGL) ==="
 echo $DISPLAY
 unset DISPLAY
-export PYOPENGL_PLATFORM=egl
+export EGL_VISIBLE_DEVICES=0
+export MAGNUM_GPU_VALIDATION=ON
 export QT_QPA_PLATFORM=offscreen
 echo "=== EGL CHECK ==="
 python -c "
