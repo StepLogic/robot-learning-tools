@@ -58,7 +58,7 @@ print("\n=== Test 2: habitat-lab HabitatEnv (HabitatNavEnv) ===")
 try:
     from habitat_env import HabitatNavEnv
     from configs.habitat_config import HabitatNavConfig
-    from train_habitat_her import HabitatRewardWrapper
+    # from train_habitat_her import HabitatRewardWrapper
 
     # from racer_imu_env import StackingWrapper
     # from wrappers import (
