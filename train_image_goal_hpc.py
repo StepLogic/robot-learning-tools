@@ -17,7 +17,7 @@ from configs import drq_default
 import tqdm
 
 from habitat_wrappers import VideoRecorder
-from jaxrl2.examples.train_offline import FLAGS
+from jaxrl2.examples.train_offline import TrainConfig
 
 
 # Apply headless settings first, before any habitat imports
@@ -122,6 +122,13 @@ class TrainConfig:
     replay_buffer_size = int(1e6)
     max_episode_steps = 3000
     start_training = 1000
+    pretrained_checkpoint = None
+    video_interval = 0
+    video_length = 0
+    log_interval = 1000
+    batch_size = 64
+    checkpoint_interval = 1000
+
 
 device = "cuda"
 habitat_cfg = HabitatNavConfig(
@@ -171,9 +178,9 @@ resume_path, resume_step = _find_latest_checkpoint(POLICY_FOLDER)
 if resume_path is not None:
     agent = load_checkpoint(agent, resume_path)
     print(f"[Checkpoint] Resumed from {resume_path} (step {resume_step:,})")
-elif FLAGS.pretrained_checkpoint:
-    agent = load_checkpoint(agent, FLAGS.pretrained_checkpoint)
-    print(f"[Checkpoint] Loaded pre-trained from {FLAGS.pretrained_checkpoint}")
+elif TrainConfig.pretrained_checkpoint:
+    agent = load_checkpoint(agent, TrainConfig.pretrained_checkpoint)
+    print(f"[Checkpoint] Loaded pre-trained from {TrainConfig.pretrained_checkpoint}")
     resume_step = 0
 else:
     resume_step = 0
@@ -203,7 +210,7 @@ logger = Logger(log_dir)
 
 # ── Video recording ──────────────────────────────────────────────────────
 video_rec = None
-if FLAGS.video_interval > 0:
+if TrainConfig.video_interval > 0:
     video_dir = os.path.join(log_dir, "videos")
     video_rec = VideoRecorder(env, video_dir=video_dir)
     env = video_rec  # wrap so env.step/reset captures frames
@@ -288,29 +295,29 @@ for step in pbar:
 
         update_info = agent.update(batch)
 
-        if step % FLAGS.log_interval == 0:
+        if step % TrainConfig.log_interval == 0:
             logger.log_training(update_info, step)
 
     # ── Checkpoint ───────────────────────────────────────────────────────
-    if step % FLAGS.checkpoint_interval == 0 and step > FLAGS.start_training:
+    if step % TrainConfig.checkpoint_interval == 0 and step > TrainConfig.start_training:
         ckpt_dir = os.path.join(POLICY_FOLDER, f"checkpoint_{step}")
         save_checkpoint(agent, replay_buffer, ckpt_dir, step)
         print(f"[Checkpoint] Saved at step {step:,}")
 
     # ── Video recording ──────────────────────────────────────────────────
     if video_rec is not None:
-        if not video_recording and step % FLAGS.video_interval == 0:
+        if not video_recording and step % TrainConfig.video_interval == 0:
             video_rec.start_recording()
             video_recording = True
             video_step_count = 0
         if video_recording:
             video_step_count += 1
-            if video_step_count >= FLAGS.video_length:
+            if video_step_count >= TrainConfig.video_length:
                 video_rec.stop_and_save(f"step_{step:07d}.mp4")
                 video_recording = False
 
     # ── Progress ──────────────────────────────────────────────────────────
-    if step % FLAGS.log_interval == 0:
+    if step % TrainConfig.log_interval == 0:
         pbar.set_postfix({
             "step": step,
             "buffer": replay_buffer._size,
@@ -318,14 +325,14 @@ for step in pbar:
             "sr": f"{np.mean(episode_successes):.0%}" if episode_successes else "0%",
             "dist": f"{np.mean(episode_distances):.2f}m" if episode_distances else "0m",
         })
-        logger.print_status(step, FLAGS.max_steps, extra_stats={
+        logger.print_status(step, TrainConfig.max_steps, extra_stats={
             "Buffer size": replay_buffer._size,
             "Goal threshold": goal_threshold,
         })
 
 # ── Final save ───────────────────────────────────────────────────────────
 final_dir = os.path.join(POLICY_FOLDER, "final")
-save_checkpoint(agent, replay_buffer, final_dir, FLAGS.max_steps)
+save_checkpoint(agent, replay_buffer, final_dir, TrainConfig.max_steps)
 print(f"\nTraining complete. Final checkpoint saved to {final_dir}")
 
 env.close()
