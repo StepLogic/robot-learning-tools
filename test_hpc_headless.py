@@ -73,17 +73,17 @@ try:
     env = HabitatNavEnv(cfg, render_mode="rgb_array")
     env = StackingWrapper(env, num_stack=3, image_format="rgb")
 
-    # Shared MobileNetV3 encoder for current obs and goal
-    shared_encoder = MobileNetV3Encoder(
-        device=device,
-        num_blocks=13,
-        input_size=84,
-    )
-    env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
-    env = GoalImageWrapper(env, encoder=shared_encoder)
-    goal_threshold = 2.0
-    reward_wrapper = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
-    env = reward_wrapper
+    # # Shared MobileNetV3 encoder for current obs and goal
+    # shared_encoder = MobileNetV3Encoder(
+    #     device=device,
+    #     num_blocks=13,
+    #     input_size=84,
+    # )
+    # env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
+    # env = GoalImageWrapper(env, encoder=shared_encoder)
+    # goal_threshold = 2.0
+    # reward_wrapper = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
+    # env = reward_wrapper
 
     print("  HabitatNavEnv created: OK")
 
