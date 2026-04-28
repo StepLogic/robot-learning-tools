@@ -60,16 +60,16 @@ try:
     from configs.habitat_config import HabitatNavConfig
     # from train_habitat_her import HabitatRewardWrapper
 
-    # from racer_imu_env import StackingWrapper
-    # from wrappers import (
-    #     Logger,
-    #     MobileNetFeatureWrapper,
-    #     MobileNetV3Encoder,
-    #     GoalImageWrapper,
-    #     load_checkpoint,
-    #     save_checkpoint,
-    # )
-    # # device = "cuda"
+    from racer_imu_env import StackingWrapper
+    from wrappers import (
+        Logger,
+        MobileNetFeatureWrapper,
+        MobileNetV3Encoder,
+        GoalImageWrapper,
+        load_checkpoint,
+        save_checkpoint,
+    )
+    # device = "cuda"
     cfg = HabitatNavConfig(headless=True)
     env = HabitatNavEnv(cfg, render_mode="rgb_array")
     # env = StackingWrapper(env, num_stack=3, image_format="rgb")
