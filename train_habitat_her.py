@@ -19,24 +19,16 @@ os.environ.pop("DISPLAY", None)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("MAGNUM_GPU_VALIDATION", "0")
 
-import pickle
-import random
 from collections import deque
 from datetime import datetime
 import faulthandler
-import cv2
 import flax
-import jax
-import jax.numpy as jnp
 import numpy as np
 from absl import app, flags
 from ml_collections import config_flags
 
 import torch
 import tqdm
-
-import gymnasium as gym
-from gymnasium import spaces
 
 from jaxrl2.agents import DrQLearner
 from jaxrl2.data import ReplayBuffer
@@ -192,11 +184,6 @@ def main(_):
     env = RecordEpisodeStatistics(env)
     env = TimeLimit(env, max_episode_steps=FLAGS.max_episode_steps)
 
-    # ── Training loop ────────────────────────────────────────────────────────
-    obs, info = env.reset()
-
-
-    
     print(f"Observation space : {env.observation_space}")
     print(f"Action space      : {env.action_space}")
 
@@ -253,6 +240,8 @@ def main(_):
         video_rec = VideoRecorder(env, video_dir=video_dir)
         env = video_rec  # wrap so env.step/reset captures frames
 
+    # ── Training loop ────────────────────────────────────────────────────────
+    obs, info = env.reset()
     episode_reward = 0.0
     episode_length = 0
     episode_distance = 0.0

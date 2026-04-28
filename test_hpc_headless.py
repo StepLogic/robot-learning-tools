@@ -60,6 +60,11 @@ print("\n=== Test 2: habitat-lab HabitatEnv (HabitatNavEnv) ===")
 try:
     from habitat_env import HabitatNavEnv
     from configs.habitat_config import HabitatNavConfig
+    from jaxrl2.agents import DrQLearner
+    from jaxrl2.data import ReplayBuffer
+    from jaxrl2.noise import OrnsteinUhlenbeckActionNoise
+    from jaxrl2.wrappers.record_statistics import RecordEpisodeStatistics
+    from jaxrl2.wrappers.timelimit import TimeLimit
 
     from racer_imu_env import StackingWrapper
     from wrappers import (
@@ -88,6 +93,11 @@ try:
     env = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
     env =VideoRecorder(env, video_dir="test_videos", record_episodes=True)
     # env = reward_wrapper
+    replay_buffer = ReplayBuffer(
+            env.observation_space,
+            env.action_space,
+            int(1e6),
+        )
 
     print("  HabitatNavEnv created: OK")
 
