@@ -1,30 +1,29 @@
 """
 Habitat-Lab environment for image-goal navigation.
 
-Uses habitat.Env (from habitat-lab) instead of raw habitat_sim.Simulator.
-Leverages habitat-lab's built-in:
-  - ImageGoalSensor for goal image rendering
-  - DistanceToGoal measure for geodesic distance
-  - Collisions measure for collision tracking
-  - NavigationEpisode for episode management
-  - VelocityAction for continuous control
+Pure habitat-lab pipeline — no direct habitat_sim calls.
 
-Preserves the same obs/info/action interface as the previous raw-sim version
-so the existing wrapper stack (StackingWrapper → MobileNetFeatureWrapper →
-GoalImageWrapper → HabitatRewardWrapper) works unchanged.
+All simulator access goes through habitat-lab's Env / Task / Simulator
+abstractions. Stepping uses the VelocityControl action registered in the
+task config. Observations come from habitat-lab sensors (rgb, imagegoal).
+Metrics come from habitat-lab measures (distance_to_goal,
+distance_to_goal_reward, success, spl, collisions).
 
-Observation:  {"image": (H,W,3) uint8 RGB, "imu": (6,) float32}
-              imu = [ax, ay, gx, gy, mean_resultant_accel_20, mean_throttle_20]
-Action:       [angular_velocity, linear_velocity]  normalised [-1,1] x [0,1]
-Info keys:    velocity, collision, blocked, forward_vel, hit, accel, gyro,
-              pos, yaw, goal_image, distance_to_goal, goal_pos
+Observation:  {"image": (H,W,3) uint8 RGB, "imu": (10,) float32}
+              imu = [ang_cmd, lin_cmd, ax, ay, gx, gy,
+                     mean_resultant_accel_20, mean_throttle_20,
+                     geo_dist (or -1 if masked), mask_flag]
+Action:       [angular_velocity, linear_velocity]  in [-0.5,0.5] x [0.0,0.5]
+Info keys:    velocity, collision, blocked, forward_vel, actual_vel, hit,
+              accel, gyro, pos, yaw, goal_image, distance_to_goal,
+              goal_pos, delta_x, habitat_success, habitat_spl,
+              habitat_distance_to_goal_reward
 """
 
 from collections import deque
 import logging
 import math
-from dataclasses import asdict
-import random 
+import random
 from typing import Optional
 
 import cv2
@@ -38,67 +37,54 @@ from configs.habitat_config import HabitatNavConfig
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Try importing habitat-lab — set a flag so we can provide a dummy fallback.
+# habitat-lab imports — all simulator access goes through these.
 # ---------------------------------------------------------------------------
-# try:
 import habitat
 from habitat import Env as HabitatEnv
 from habitat.config.default import get_config as get_habitat_config
-from habitat.config.default_structured_configs import (
-    VelocityControlActionConfig,
-)
+from habitat.config.default_structured_configs import VelocityControlActionConfig
 from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
 from habitat.tasks.nav.nav import NavigationEpisode, NavigationGoal
-import habitat_sim
-import magnum as mn
-HAS_HABITAT_LAB = True
-# except ImportError:
-#     HAS_HABITAT_LAB = False
-#     logger.warning("habitat-lab not installed — HabitatNavEnv will not be usable.")
 
 
 # ============================================================================
-# Quaternion / geometry helpers
+# Geometry helpers (pure numpy/math — no habitat_sim imports)
 # ============================================================================
 
 def _quat_to_xyzw(q) -> np.ndarray:
-    """Convert any quaternion-like object to [x,y,z,w] numpy array.
-
-    Handles numpy-quaternion (has .w/.x/.y/.z) and plain arrays.
-    """
-    if hasattr(q, 'w') and hasattr(q, 'x') and hasattr(q, 'y') and hasattr(q, 'z'):
+    """Convert any quaternion-like to [x,y,z,w]."""
+    if hasattr(q, 'x') and hasattr(q, 'w'):
         return np.array([q.x, q.y, q.z, q.w], dtype=np.float64)
-    return np.asarray(q, dtype=np.float64).ravel()
+    arr = np.asarray(q, dtype=np.float64).ravel()
+    return arr
 
 
 def _quat_to_yaw(q) -> float:
-    """Extract yaw (rotation around Y-up) from a unit quaternion [x,y,z,w]."""
+    """Yaw (rotation around Y-up) from unit quaternion [x,y,z,w]."""
     a = _quat_to_xyzw(q)
-    w, x, y, z = a[3], a[0], a[1], a[2]
-    siny_cosp = 2.0 * (w * y + x * z)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    return math.atan2(siny_cosp, cosy_cosp)
+    x, y, z, w = a[0], a[1], a[2], a[3]
+    siny = 2.0 * (w * y + x * z)
+    cosy = 1.0 - 2.0 * (y * y + z * z)
+    return math.atan2(siny, cosy)
 
 
-def _yaw_to_quat(yaw: float) -> np.ndarray:
-    """Convert yaw angle (rad, around Y-up) to [x,y,z,w] quaternion."""
+def _yaw_to_quat_list(yaw: float) -> list:
+    """Yaw (rad) → [x,y,z,w] as a plain list (for NavigationEpisode)."""
     half = yaw * 0.5
-    return np.array([0.0, math.sin(half), 0.0, math.cos(half)],
-                    dtype=np.float64)
+    return [0.0, math.sin(half), 0.0, math.cos(half)]
 
 
-def _quat_to_rotation_matrix(q: np.ndarray) -> np.ndarray:
-    """Quaternion [x,y,z,w] to 3x3 rotation matrix."""
-    x, y, z, w = q[0], q[1], q[2], q[3]
+def _quat_to_R(q: np.ndarray) -> np.ndarray:
+    """Quaternion [x,y,z,w] → 3×3 rotation matrix."""
+    x, y, z, w = q
     return np.array([
-        [1 - 2*(y*y + z*z), 2*(x*y - w*z),     2*(x*z + w*y)],
-        [2*(x*y + w*z),     1 - 2*(x*x + z*z), 2*(y*z - w*x)],
-        [2*(x*z - w*y),     2*(y*z + w*x),     1 - 2*(x*x + y*y)],
+        [1 - 2*(y*y+z*z),  2*(x*y-w*z),     2*(x*z+w*y)],
+        [2*(x*y+w*z),      1 - 2*(x*x+z*z), 2*(y*z-w*x)],
+        [2*(x*z-w*y),      2*(y*z+w*x),     1 - 2*(x*x+y*y)],
     ], dtype=np.float64)
 
 
-def _wrap_angle(a: float) -> float:
-    """Wrap angle to [-pi, pi]."""
+def _wrap(a: float) -> float:
     return (a + math.pi) % (2 * math.pi) - math.pi
 
 
@@ -106,7 +92,7 @@ def _wrap_angle(a: float) -> float:
 # Config builder
 # ============================================================================
 
-def _build_habitat_config(cfg: HabitatNavConfig) -> "OmegaConf.DictConfig":
+def _build_habitat_config(cfg: HabitatNavConfig, scene_path: str) -> "OmegaConf.DictConfig":
     """Build an OmegaConf DictConfig for habitat.Env from HabitatNavConfig."""
     from habitat.config.default import register_configs
     register_configs()
@@ -117,33 +103,39 @@ def _build_habitat_config(cfg: HabitatNavConfig) -> "OmegaConf.DictConfig":
     OmegaConf.set_struct(base_cfg, False)
     OmegaConf.set_readonly(base_cfg, False)
 
-    # Simulator settings
-    base_cfg.habitat.simulator.scene = cfg.scene_path
-    base_cfg.habitat.simulator.scene_dataset = (
-        cfg.scene_dataset_path if cfg.scene_dataset_path else "default"
-    )
-    base_cfg.habitat.simulator.default_agent_id = 0
-    base_cfg.habitat.simulator.agents.main_agent.height = cfg.agent_height
-    base_cfg.habitat.simulator.agents.main_agent.radius = 0.1
-    base_cfg.habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.height = cfg.image_height
-    base_cfg.habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.width = cfg.image_width
-    base_cfg.habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.position = [
-        0.0, cfg.agent_height, 0.0
-    ]
-    base_cfg.habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.hfov = int(cfg.hfov)
-    base_cfg.habitat.simulator.habitat_sim_v0.gpu_device_id = cfg.gpu_device_id
-    base_cfg.habitat.simulator.habitat_sim_v0.allow_sliding = cfg.allow_sliding
-    # base_cfg.habitat.simulator.renderer.type = "EGL"
-    base_cfg.habitat.seed = cfg.seed
-    # base_cfg.habitat.enable_physics = True
+    sim = base_cfg.habitat.simulator
+    agent = sim.agents.main_agent
 
-    # Remove depth sensor (we only need RGB + imagegoal)
-    del base_cfg.habitat.simulator.agents.main_agent.sim_sensors.depth_sensor
-    # Remove top_down_map (heavy, unused)
-    del base_cfg.habitat.task.measurements.top_down_map
-    # Keep: distance_to_goal, success, spl, distance_to_goal_reward
+    # Scene
+    sim.scene = scene_path
+    sim.scene_dataset = cfg.scene_dataset_path or "default"
+    sim.default_agent_id = 0
+    sim.habitat_sim_v0.gpu_device_id = cfg.gpu_device_id
+    sim.habitat_sim_v0.allow_sliding = cfg.allow_sliding
 
-    # Use VelocityAction for continuous control
+    # Agent geometry
+    agent.height = cfg.agent_height
+    agent.radius = 0.1
+
+    # RGB sensor
+    rgb = agent.sim_sensors.rgb_sensor
+    rgb.height = cfg.image_height
+    rgb.width = cfg.image_width
+    rgb.position = [0.0, cfg.agent_height, 0.0]
+    rgb.hfov = int(cfg.hfov)
+
+    # Drop depth sensor (not needed)
+    if hasattr(agent.sim_sensors, "depth_sensor"):
+        del agent.sim_sensors.depth_sensor
+
+    # Physics — keep enabled so VelocityControl works
+    # base_cfg.habitat.simulator.enable_physics = True
+
+    # Remove heavy unused measurements
+    if hasattr(base_cfg.habitat.task.measurements, "top_down_map"):
+        del base_cfg.habitat.task.measurements.top_down_map
+
+    # Continuous velocity action
     max_ang_deg = math.degrees(cfg.max_angular_velocity)
     vc = OmegaConf.structured(VelocityControlActionConfig(
         lin_vel_range=[0.0, cfg.max_linear_velocity],
@@ -154,599 +146,481 @@ def _build_habitat_config(cfg: HabitatNavConfig) -> "OmegaConf.DictConfig":
     ))
     base_cfg.habitat.task.actions = {"velocity_control": vc}
 
-    # Environment
-    base_cfg.habitat.environment.max_episode_steps = 100000  # Handled by TimeLimit wrapper
+    # Let our wrapper handle episode length
+    base_cfg.habitat.environment.max_episode_steps = 1_000_000
 
-    # Dataset: will be provided programmatically
+    # Dataset placeholder (episodes injected programmatically)
     base_cfg.habitat.dataset.type = "PointNav-v1"
     base_cfg.habitat.dataset.data_path = ""
     base_cfg.habitat.dataset.scenes_dir = "data"
+    base_cfg.habitat.seed = cfg.seed
 
     return base_cfg
 
 
 # ============================================================================
-# HabitatNavEnv
+# HabitatNavEnv — pure habitat-lab
 # ============================================================================
 
 class HabitatNavEnv(gym.Env):
     """
-    Gymnasium environment wrapping habitat-lab for image-goal navigation.
+    Gymnasium wrapper around habitat-lab for image-goal navigation.
 
-    Uses habitat.Env for simulator management, ImageGoalSensor for goal
-    rendering, DistanceToGoal for geodesic distance, and Collisions for
-    collision detection. Continuous control via VelocityAction with custom
-    frame_skip integration.
-
-    Mirrors RacerEnv interface:
-        obs  = {"image": (H,W,3) uint8 RGB, "imu": (6,) float32}
-               imu = [ax, ay, gx, gy, mean_resultant_accel_20, mean_throttle_20]
-        info = {velocity, collision, blocked, forward_vel, hit, accel, gyro,
-                pos, yaw, goal_image, distance_to_goal, goal_pos}
+    Stepping:     habitat-lab VelocityControl action (no raw habitat_sim calls)
+    Observations: habitat-lab RGB sensor + ImageGoalSensor
+    Metrics:      habitat-lab DistanceToGoal, Collisions, success, SPL
     """
 
     metadata = {"render_modes": ["human", "rgb_array"]}
 
+    # ------------------------------------------------------------------
     def __init__(
         self,
         config: Optional[HabitatNavConfig] = None,
         render_mode: str = "rgb_array",
     ):
-        if not HAS_HABITAT_LAB:
-            raise RuntimeError(
-                "habitat-lab is not installed. Install with: "
-                "pip install habitat-lab"
-            )
-
         self._cfg = config or HabitatNavConfig()
         self.render_mode = render_mode
+        self._imu_dim = 10
 
         H, W = self._cfg.image_height, self._cfg.image_width
-        self._imu_dimension: int = 10
-        # ── Build habitat config and dataset ──────────────────────────────────
-        hab_cfg = _build_habitat_config(self._cfg)
 
-        # Create placeholder dataset with one episode.
-        # Start and goal are 1m apart so SPL's _start_end_episode_distance
-        # is non-zero during env init (avoids ZeroDivisionError).
-        self._dataset = PointNavDatasetV1()
-        self._dataset.episodes = [
+        # ── Build habitat-lab env ──────────────────────────────────────
+        self._current_scene: str = self._cfg.scene_path
+        hab_cfg = _build_habitat_config(self._cfg, self._current_scene)
+
+        # Placeholder dataset (one episode; replaced on every reset)
+        self._dataset = self._make_placeholder_dataset(self._current_scene)
+
+        self._env: HabitatEnv = HabitatEnv(hab_cfg, dataset=self._dataset)
+        self._hab_cfg = hab_cfg  # kept for scene switching
+
+        # Expose the habitat-lab simulator wrapper (not raw habitat_sim)
+        # All sim access goes through self._hsim (habitat's HabitatSimV2)
+        self._hsim = self._env._sim  # habitat.sims.habitat_simulator.HabitatSim
+
+        # Pathfinder from habitat-lab sim wrapper (safe to use for navmesh queries)
+        self._pathfinder = self._hsim.pathfinder
+
+        self._rng = np.random.default_rng(self._cfg.seed)
+        self._scene_paths = self._cfg.get_scene_paths()
+
+        # ── Spaces ────────────────────────────────────────────────────
+        self.observation_space = spaces.Dict({
+            "image": spaces.Box(0, 255, (H, W, 3), dtype=np.uint8),
+            "imu":   spaces.Box(-np.inf, np.inf, (self._imu_dim,), dtype=np.float32),
+        })
+        self.action_space = spaces.Box(
+            low=np.array([-0.5, 0.0], dtype=np.float32),
+            high=np.array([0.5,  0.5], dtype=np.float32),
+            dtype=np.float32,
+        )
+
+        # ── Internal state ─────────────────────────────────────────────
+        self._dt = 1.0 / self._cfg.control_frequency
+        self._step_count = 0
+        self._episode_counter = 0
+
+        self._prev_pos: np.ndarray = np.zeros(3)
+        self._prev_rot: np.ndarray = np.array([0., 0., 0., 1.])
+        self._prev_vel: np.ndarray = np.zeros(3)
+
+        self._current_accel = np.zeros(3, dtype=np.float32)
+        self._current_gyro  = np.zeros(3, dtype=np.float32)
+        self._forward_vel: float = 0.0
+        self._actual_vel:  float = 0.0
+        self._delta_x = np.zeros(3, dtype=np.float64)
+        self._collision_detected: bool = False
+
+        self._current_image = np.zeros((H, W, 3), dtype=np.uint8)
+        self._current_imu   = np.zeros(self._imu_dim, dtype=np.float32)
+        self._goal_image:    Optional[np.ndarray] = None
+        self._goal_position: np.ndarray = np.zeros(3)
+
+        self._accel_hist   = deque(maxlen=20)
+        self._throttle_hist = deque(maxlen=20)
+
+        self.action   = np.zeros(2, dtype=np.float32)
+        self.geo_dist: float = 0.0
+        self.goals = []
+
+        # Top-down map cache
+        self._topdown_map:    Optional[np.ndarray] = None
+        self._topdown_bounds = None
+        self._topdown_res: float = 0.02
+        self._trajectory: list = []
+
+    # ------------------------------------------------------------------
+    # Dataset / episode helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_placeholder_dataset(scene_path: str) -> PointNavDatasetV1:
+        ds = PointNavDatasetV1()
+        ds.episodes = [
             NavigationEpisode(
                 episode_id="0",
-                scene_id=self._cfg.scene_path,
+                scene_id=scene_path,
                 start_position=[0.0, 0.0, 0.0],
                 start_rotation=[0.0, 0.0, 0.0, 1.0],
                 goals=[NavigationGoal(position=[1.0, 0.0, 0.0])],
             )
         ]
+        return ds
 
-        # Create habitat.Env directly (composition, not RLEnv inheritance)
-        self._env = HabitatEnv(hab_cfg, dataset=self._dataset)
-        self._sim = self._env._sim
-        self._pathfinder = self._sim.pathfinder
-        self._rng = np.random.default_rng(self._cfg.seed)
-        self._scene_paths = self._cfg.get_scene_paths()
-        self._current_scene = self._cfg.scene_path
+    def _sample_navigable(self) -> np.ndarray:
+        return np.array(self._pathfinder.get_random_navigable_point())
 
-        # Define observation and action spaces
-        H, W = self._cfg.image_height, self._cfg.image_width
-        self.observation_space = spaces.Dict({
-            "image": spaces.Box(low=0, high=255, shape=(H, W, 3), dtype=np.uint8),
-            "imu":   spaces.Box(low=-np.inf, high=np.inf, shape=(self._imu_dimension,),
-                               dtype=np.float32),
-        })
-        self.action_space = spaces.Box(
-            low=np.array([-0.5, 0.0], dtype=np.float32),
-            high=np.array([0.5, 0.5], dtype=np.float32),
-            dtype=np.float32,
-        )
+    def _sample_episode(self) -> NavigationEpisode:
+        """Sample start + goal positions on the navmesh."""
+        max_dist = 10.0
+        start = self._sample_navigable()
+        yaw   = self._rng.uniform(0, 2 * math.pi)
+        rot   = _yaw_to_quat_list(yaw)
 
-        # Velocity controller for frame_skip stepping
-        self._vel_control = habitat_sim.physics.VelocityControl()
-        self._vel_control.controlling_lin_vel = True
-        self._vel_control.lin_vel_is_local = True
-        self._vel_control.controlling_ang_vel = True
-        self._vel_control.ang_vel_is_local = True
-        self._dt = 1.0 / self._cfg.control_frequency
+        for _ in range(50):
+            dist  = self._rng.uniform(0.5, max_dist)
+            angle = self._rng.uniform(0, 2 * math.pi)
+            # Candidate goal in world space (flat plane, Y from navmesh snap)
+            candidate = start + np.array([
+                dist * math.sin(angle),
+                0.0,
+                dist * math.cos(angle),
+            ])
+            if not self._pathfinder.is_navigable(candidate):
+                max_dist *= 1.1
+                continue
+            geo = self._hsim.geodesic_distance(start, candidate)
+            if 0.5 <= geo <= max_dist:
+                ep = NavigationEpisode(
+                    episode_id=str(self._episode_counter),
+                    scene_id=self._current_scene,
+                    start_position=start.tolist(),
+                    start_rotation=rot,
+                    goals=[NavigationGoal(position=candidate.tolist())],
+                )
+                self._episode_counter += 1
+                return ep
+            max_dist *= 1.1
 
-        # ── Internal state ────────────────────────────────────────────────
-        self._step_count = 0
-        self._prev_position: np.ndarray = np.zeros(3)
-        self._prev_rotation: np.ndarray = np.array([0, 0, 0, 1], dtype=np.float64)
-        self._prev_velocity: np.ndarray = np.zeros(3)
-        self._current_accel: np.ndarray = np.zeros(3, dtype=np.float32)
-        self._current_gyro: np.ndarray = np.zeros(3, dtype=np.float32)
-        self._forward_vel: float = 0.0
-        self._actual_vel: float = 0.0
-        self._delta_x: np.ndarray = np.zeros(3, dtype=np.float64)
-        self._collision_detected: bool = False
-        self._current_image: np.ndarray = np.zeros((H, W, 3), dtype=np.uint8)
-     
-        self._current_imu: np.ndarray = np.zeros(self._imu_dimension, dtype=np.float32)
-        self._goal_image: Optional[np.ndarray] = None
-        self._goal_position: np.ndarray = np.zeros(3)
-        self._episode_counter = 0
-        self._goals = []
-        self._accel_resultant_history = deque(maxlen=20)
-        self._throttle_history = deque(maxlen=20)
-        # ── Top-down map (cached on first access) ──────────────────────────
-        self._topdown_map: Optional[np.ndarray] = None  # RGB map image
-        self._topdown_bounds = None  # (min_xz, max_xz) in world coords
-        self._topdown_resolution: float = 0.02  # meters per pixel
-        self._trajectory: list = []  # agent positions for trail
-        self.goals=[]
-        self.geo_dist=0.0
-        self.action =np.zeros(2,dtype=np.float32)
-    # ── Scene randomization ─────────────────────────────────────────────
+        # Fallback: retry with two fresh navigable points
+        return self._sample_episode()
+
+    # ------------------------------------------------------------------
+    # Scene switching
+    # ------------------------------------------------------------------
 
     def _switch_scene(self, scene_path: str):
-        """Reconfigure the simulator to load a different scene."""
         if scene_path == self._current_scene:
             return
         logger.info("Switching scene: %s → %s", self._current_scene, scene_path)
-        # Build fresh config with the new scene, then reconfigure the simulator
-        # directly (bypassing Env.reconfigure which has config-struct issues).
-        hab_cfg = _build_habitat_config(self._cfg)
-        hab_cfg.habitat.simulator.scene = scene_path
-        if not self._cfg.scene_dataset_path:
-            hab_cfg.habitat.simulator.scene_dataset = "default"
-        # Update the env's stored config so episode generation uses the new scene
-        self._env._config = hab_cfg
-        # Reconfigure the simulator backend directly
-        self._sim.reconfigure(hab_cfg.habitat.simulator)
-        self._pathfinder = self._sim.pathfinder
+        hab_cfg = _build_habitat_config(self._cfg, scene_path)
+        self._hab_cfg = hab_cfg
+        self._hsim.reconfigure(hab_cfg.habitat.simulator)
+        self._pathfinder = self._hsim.pathfinder
         self._current_scene = scene_path
-        # Invalidate cached top-down map
         self._topdown_map = None
         self._topdown_bounds = None
-        self._goals=[]
+        self.goals = []
 
-    def _random_scene(self) -> str:
-        """Pick a random scene from the scene pool."""
-        if len(self._scene_paths) <= 1:
-            return self._scene_paths[0] if self._scene_paths else self._cfg.scene_path
-        return self._rng.choice(self._scene_paths)
-
-    # ── Episode sampling ─────────────────────────────────────────────────
-
-    def _sample_navigable_point(self) -> np.ndarray:
-        """Sample a random navigable point on the navmesh."""
-        # for _ in range(100):
-        point = np.array(self._pathfinder.get_random_navigable_point())
-            # if self._pathfinder.is_navigable(point):
-            # return point
-        # Fallback: snap a random point to navmesh
-        point = np.array(self._pathfinder.get_random_navigable_point())
-        return point
-
-    # ── Top-down map ──────────────────────────────────────────────────────
-
-    def _build_topdown_map(self):
-        """Build and cache a top-down map from the navmesh."""
-        bounds = self._pathfinder.get_bounds()
-        min_b = np.array([bounds[0][0], bounds[0][2]], dtype=np.float64)  # x, z
-        max_b = np.array([bounds[1][0], bounds[1][2]], dtype=np.float64)
-        self._topdown_bounds = (min_b, max_b)
-
-        # Get navmesh top-down view at agent height
-        td = self._pathfinder.get_topdown_view(
-            meters_per_pixel=self._topdown_resolution,
-            height=0.09,
-        )
-        # td is bool (H, W): True = navigable
-        # Convert to RGB: navigable=light gray, walls=dark
-        h, w = td.shape
-        rgb = np.zeros((h, w, 3), dtype=np.uint8)
-        rgb[td] = [200, 200, 200]   # navigable = light gray
-        rgb[~td] = [40, 40, 40]     # walls = dark
-        self._topdown_map = rgb
-
-    def _world_to_map_px(self, world_xz: np.ndarray) -> tuple:
-        """Convert world (x, z) coordinates to top-down map pixel (row, col)."""
-        if self._topdown_bounds is None:
-            return (0, 0)
-        min_b, max_b = self._topdown_bounds
-        res = self._topdown_resolution
-        col = int((world_xz[0] - min_b[0]) / res)
-        row = int((world_xz[1] - min_b[1]) / res)
-        row = np.clip(row, 0, self._topdown_map.shape[0] - 1)
-        col = np.clip(col, 0, self._topdown_map.shape[1] - 1)
-        return (row, col)
-
-    def _render_topdown(self) -> np.ndarray:
-        """Render top-down map with agent, goal, and trajectory overlay."""
-        if self._topdown_map is None:
-            self._build_topdown_map()
-
-        map_img = self._topdown_map.copy()
-        h, w = map_img.shape[:2]
-
-        # Draw trajectory trail (green)
-        if len(self._trajectory) > 1:
-            for i in range(1, len(self._trajectory)):
-                p1 = self._world_to_map_px(self._trajectory[i - 1][[0, 2]])
-                p2 = self._world_to_map_px(self._trajectory[i][[0, 2]])
-                cv2.line(map_img, (p1[1], p1[0]), (p2[1], p2[0]),
-                         (0, 200, 0), 1, cv2.LINE_AA)
-
-        # Draw goal (red circle)
-        goal_px = self._world_to_map_px(self._goal_position[[0, 2]])
-        cv2.circle(map_img, (goal_px[1], goal_px[0]), 5, (0, 0, 255), -1)
-
-        # Draw agent (blue circle + direction line)
-        agent_state = self._sim.get_agent_state()
-        agent_pos = np.array(agent_state.position, dtype=np.float64)
-        agent_px = self._world_to_map_px(agent_pos[[0, 2]])
-        cv2.circle(map_img, (agent_px[1], agent_px[0]), 4, (255, 0, 0), -1)
-        # Direction indicator
-        yaw = _quat_to_yaw(agent_state.rotation)
-        dir_len = 10  # pixels
-        end_col = int(agent_px[1] + dir_len * math.sin(yaw))
-        end_row = int(agent_px[0] - dir_len * math.cos(yaw))
-        cv2.line(map_img, (agent_px[1], agent_px[0]), (end_col, end_row),
-                 (255, 100, 0), 2, cv2.LINE_AA)
-
-        return map_img
-    def _sample_episode(self) -> NavigationEpisode:
-        """Sample a NavigationEpisode with goal distance exponentially biased toward start."""
-
-        start_pos = self._sample_navigable_point()
-        start_yaw = self._rng.uniform(0, 2 * math.pi)
-        start_rot = _yaw_to_quat(start_yaw).tolist()
-        # print(start_pos)
-        # Sample a goal within 40 meters of the agent
-        max_attempts = 50
-        goal_pos = None
-        max_distance = 10.0  # meters
-        
-        for _ in range(max_attempts):
-            # Sample random distance and angle in agent's local frame
-            distance = self._rng.uniform(0.01, max_distance)  # 3 to 20 meters
-            angle = self._rng.uniform(0, 2 * math.pi)  # full 360 degrees
-            
-            # Convert polar to Cartesian in agent's local frame
-            # In Habitat, typically: +X is right, +Z is forward, +Y is up
-            local_offset = mn.Vector3(
-                distance * math.sin(angle),  # X offset
-                0.0,                          # Y offset (keep at same height)
-                distance * math.cos(angle)   # Z offset
-            )
-            
-            # Rotate offset by agent's yaw to get world-space offset
-            rotation = mn.Quaternion.rotation(mn.Rad(start_yaw), mn.Vector3(0, 1, 0))
-            world_offset = rotation.transform_vector(local_offset)
-            
-            # Add to start position
-            candidate = start_pos + world_offset
-            
-            # Snap to navigable mesh
-            # snapped_goal = self._pathfinder.snap_point(candidate)
-            snapped_goal = candidate
-
-            # Verify it's navigable and within distance constraint
-            if self._pathfinder.is_navigable(snapped_goal):
-                geodesic_dist = self._sim.geodesic_distance(start_pos, snapped_goal)
-                if geodesic_dist <= max_distance and geodesic_dist >= 0.001:
-                    goal_pos = list(snapped_goal)
-                    break
-            max_distance *= 1.2
-        # Fallback: if no valid goal found, sample any navigable point
-        if goal_pos is None:
-            return self._sample_episode()
-        
-        ep_id = str(self._episode_counter)
-        self._episode_counter += 1
-        
-        return NavigationEpisode(
-            episode_id=ep_id,
-            scene_id=self._current_scene,
-            start_position=start_pos.tolist(),
-            start_rotation=start_rot,
-            goals=[NavigationGoal(position=goal_pos)],
-        )    # ── IMU synthesis ─────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # IMU synthesis
+    # ------------------------------------------------------------------
 
     def _synthesize_imu(self) -> np.ndarray:
-        """Synthesize IMU observation from agent state deltas.
-
-        Returns [ax, ay, gx, gy, mean_resultant_accel_20, mean_throttle_20]
-        where ax,ay are body-frame x,y acceleration, gx,gy are x,y angular
-        velocity, mean_resultant_accel_20 is the rolling mean of sqrt(ax²+ay²)
-        over the last 20 steps, and mean_throttle_20 is the rolling mean of
-        throttle (linear velocity command) over the last 20 steps.
-        """
-        agent_state = self._sim.get_agent_state()
+        agent_state = self._hsim.get_agent_state()
         curr_pos = np.array(agent_state.position, dtype=np.float64)
         curr_rot = _quat_to_xyzw(agent_state.rotation)
 
-        dt = self._dt
-
-        # Angular velocity from yaw change
         curr_yaw = _quat_to_yaw(curr_rot)
-        prev_yaw = _quat_to_yaw(self._prev_rotation)
-        yaw_rate = _wrap_angle(curr_yaw - prev_yaw) / dt
+        prev_yaw = _quat_to_yaw(self._prev_rot)
+        yaw_rate = _wrap(curr_yaw - prev_yaw) / self._dt
 
-        # Linear velocity from position change
-        curr_vel = (curr_pos - self._prev_position) / dt
-        world_accel = (curr_vel - self._prev_velocity) / dt
+        curr_vel   = (curr_pos - self._prev_pos) / self._dt
+        world_accel = (curr_vel - self._prev_vel) / self._dt
 
-        # Transform to body frame
-        R = _quat_to_rotation_matrix(curr_rot)
+        R = _quat_to_R(curr_rot)
         local_accel = R.T @ world_accel
 
-        # Map Habitat body frame to robot convention
-        ax = -local_accel[2]  # forward
-        ay = local_accel[0]    # lateral
-        az = local_accel[1]    # vertical
+        ax = -local_accel[2]   # forward
+        ay =  local_accel[0]   # lateral
+        gx, gy = 0.0, 0.0
+        gz = yaw_rate
 
-        gx, gy, gz = 0.0, 0.0, yaw_rate
-
-        # Add optional noise
         if self._cfg.imu_noise_std > 0:
-            noise = self._rng.normal(0, self._cfg.imu_noise_std, size=6)
-            ax += noise[0]; ay += noise[1]; az += noise[2]
-            gx += noise[3]; gy += noise[4]; gz += noise[5]
+            n = self._rng.normal(0, self._cfg.imu_noise_std, 6)
+            ax += n[0]; ay += n[1]
+            gx += n[3]; gy += n[4]
 
-        self._prev_position = curr_pos
-        self._prev_rotation = curr_rot
-        self._prev_velocity = curr_vel
-        self._current_accel = np.array([ax, ay, az], dtype=np.float32)
-        self._current_gyro = np.array([gx, gy, gz], dtype=np.float32)
+        self._prev_pos = curr_pos
+        self._prev_rot = curr_rot
+        self._prev_vel = curr_vel
+        self._current_accel = np.array([ax, ay, 0.0], dtype=np.float32)
+        self._current_gyro  = np.array([gx, gy, gz],  dtype=np.float32)
 
-        # Rolling means (0.0 if history is empty)
-        mean_resultant = float(np.mean(self._accel_resultant_history)) if self._accel_resultant_history else 0.0
-        mean_throttle = float(np.mean(self._throttle_history)) if self._throttle_history else 0.0
-        gd=self.geo_dist
-        # print("geo_dist:",gd)
-        mask=random.uniform(0,1)<0.3
-        # mask= False
+        mean_accel    = float(np.mean(self._accel_hist))    if self._accel_hist    else 0.0
+        mean_throttle = float(np.mean(self._throttle_hist)) if self._throttle_hist else 0.0
+
+        gd   = self.geo_dist
+        mask = random.random() < 0.3
         if mask:
             gd = -1.0
-        return np.array([self.action[0],self.action[1],ax,ay,gx,gy,mean_resultant, mean_throttle,gd,float(int(mask))], dtype=np.float32)
 
-    # ── Observation extraction ────────────────────────────────────────────
-
-    # Observation extraction — habitat-lab returns RGB directly
-
-    def _get_obs(self) -> dict:
-        # print(self._current_image.shape)
-        return {"image": self._current_image, "imu": self._current_imu}
-
-    # ── Geodesic distance ─────────────────────────────────────────────────
-
-    def _geodesic_distance(self, start: np.ndarray, end: np.ndarray) -> float:
-        """Compute geodesic (navmesh shortest path) distance."""
-        return self._sim.geodesic_distance(start, end)
-
-    # ── Habitat-lab metrics ────────────────────────────────────────────────
-
-    def _update_measures(self):
-        """Update habitat-lab measures after a physics step."""
-        episode = self._env._current_episode
-        action = {"velocity_control": np.array([0.0, 0.0], dtype=np.float32)}
-        self._env._task.measurements.update_measures(
-            episode=episode, action=action, task=self._env._task
+        return np.array(
+            [self.action[0], self.action[1],
+             ax, ay, gx, gy,
+             mean_accel, mean_throttle,
+             gd, float(mask)],
+            dtype=np.float32,
         )
 
-    def _get_habitat_metrics(self) -> dict:
-        """Get habitat-lab measure metrics (success, SPL, distance_to_goal_reward)."""
-        try:
-            return self._env.get_metrics()
-        except Exception:
-            return {}
+    # ------------------------------------------------------------------
+    # Observation / info helpers
+    # ------------------------------------------------------------------
 
-    # ── Info dict ──────────────────────────────────────────────────────────
+    def _get_obs(self) -> dict:
+        return {"image": self._current_image, "imu": self._current_imu}
 
     def _get_info(self) -> dict:
-        agent_state = self._sim.get_agent_state()
+        agent_state = self._hsim.get_agent_state()
         pos = np.array(agent_state.position, dtype=np.float64)
-        self.geo_dist = self._geodesic_distance(pos, self._goal_position)
+        self.geo_dist = self._hsim.geodesic_distance(pos, self._goal_position)
 
-        # Get habitat-lab metrics (success, SPL, distance_to_goal_reward)
-        hab_metrics = self._get_habitat_metrics()
+        metrics = {}
+        try:
+            metrics = self._env.get_metrics()
+        except Exception:
+            pass
 
         return {
-            "velocity": {"cms": self._forward_vel * 100,
-                         "ms": self._forward_vel,
-                         "method": "habitat_lab"},
-            "collision": {"detected": self._collision_detected,
-                          "distance_cm": float("inf"),
-                          "threshold_cm": 15.0},
-            "blocked": self._collision_detected,
+            "velocity":   {"cms": self._forward_vel * 100, "ms": self._forward_vel},
+            "collision":  {"detected": self._collision_detected},
+            "blocked":     self._collision_detected,
             "forward_vel": self._forward_vel,
-            "actual_vel": self._actual_vel,
-            "hit":  self._collision_detected,
-            "accel": self._current_accel,
-            "gyro": self._current_gyro,
-            "pos": pos,
-            "delta_x": self._delta_x,
-            "yaw": _quat_to_yaw(agent_state.rotation),
-            "goal_image": self._goal_image,
+            "actual_vel":  self._actual_vel,
+            "hit":         self._collision_detected,
+            "accel":       self._current_accel,
+            "gyro":        self._current_gyro,
+            "pos":         pos,
+            "delta_x":     self._delta_x,
+            "yaw":         _quat_to_yaw(agent_state.rotation),
+            "goal_image":  self._goal_image,
             "distance_to_goal": self.geo_dist,
-            "goal_pos": self._goal_position,
-            "habitat_success": hab_metrics.get("success", 0.0),
-            "habitat_spl": hab_metrics.get("spl", 0.0),
-            "habitat_distance_to_goal_reward": hab_metrics["distance_to_goal_reward"],
+            "goal_pos":    self._goal_position,
+            "habitat_success": metrics.get("success", 0.0),
+            "habitat_spl":     metrics.get("spl", 0.0),
+            "habitat_distance_to_goal_reward": metrics.get("distance_to_goal_reward", 0.0),
         }
 
-    # ── Gym API ────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Gym API — reset
+    # ------------------------------------------------------------------
 
     def reset(self, seed=None, options=None):
         self.action = np.zeros(2, dtype=np.float32)
         if seed is not None:
             self._rng = np.random.default_rng(seed)
 
-        # Randomly select a scene and reconfigure if it changed
-        if random.randint(0,100)==1 and self._cfg.randomize_scenes:
-            new_scene = self._random_scene()
-            self._switch_scene(new_scene)
+        # Optional scene randomization
+        if self._cfg.randomize_scenes and random.randint(0, 100) == 1:
+            self._switch_scene(self._random_scene())
 
-        # Sample a new episode and set it BEFORE resetting the habitat env,
-        # so measures compute correct distances (not the placeholder episode).
+        # Sample episode and inject it before habitat.Env.reset()
         episode = self._sample_episode()
-
         self._env._current_episode = episode
         self._env._episode_over = False
+        obs = self._env.reset()
+        # Reset through habitat-lab task (sensors, measures init)
         obs = self._env._task.reset(episode=episode)
-        self.geo_dist=0.0
-        # Manually reposition agent to episode's start position.
-        # task.reset() doesn't move the agent because we bypass Env.reconfigure()
-        # (which sets is_set_start_state=True via overwrite_sim_config).
-        new_state = habitat_sim.AgentState()
-        new_state.position = np.array(episode.start_position, dtype=np.float32)
-        new_state.rotation = np.array(episode.start_rotation, dtype=np.float32)
-        self._sim.get_agent(0).set_state(new_state)
 
-        # Re-get observations from the correct position
-        sim_obs = self._sim.get_sensor_observations()
-        obs["rgb"] = sim_obs["rgb"]
-
-        # Reset habitat-lab measures (e.g. SPL needs _previous_position set)
-        self._env._task.measurements.reset_measures(
-            episode=episode, task=self._env._task, observations=obs
+        # Teleport agent to sampled start (task.reset doesn't move agent
+        # when we bypass Env.reconfigure)
+        self._hsim.set_agent_state(
+            position=episode.start_position,
+            rotation=episode.start_rotation,
+            agent_id=0,
+            reset_sensors=True,
         )
 
-        # Extract RGB observation (habitat-lab returns RGB directly)
-        self._current_image = obs["rgb"]
-        # cv2.imwrite("current_image.png", self._current_image)
-        # Extract goal image from ImageGoalSensor
-        # if "imagegoal" in obs:
-        self._goal_image = obs["imagegoal"]
-        # cv2.imwrite("goal_image.png", self._goal_image)
-        # else:
-        #     self._goal_image = np.zeros_like(self._current_image)
-        # print(episode.goals[0].position)
-        self._goal_position = np.array(episode.goals[0].position, dtype=np.float64)
+        # Re-fetch observations from correct position
+        obs = self._hsim.get_observations_at(
+            position=episode.start_position,
+            rotation=episode.start_rotation,
+            keep_agent_at_new_pose=True,
+        )
+
+        # Reset measures with correct starting position
+        self._env._task.measurements.reset_measures(
+            episode=episode,
+            task=self._env._task,
+            observations=obs,
+        )
+
+        # Extract image obs
+        self._current_image = np.array(obs["rgb"][:, :, :3], dtype=np.uint8)
+        self._goal_image     = np.array(obs["imagegoal"][:, :, :3], dtype=np.uint8) \
+                               if "imagegoal" in obs else np.zeros_like(self._current_image)
+        self._goal_position  = np.array(episode.goals[0].position, dtype=np.float64)
 
         # Reset internal state
-        agent_state = self._sim.get_agent_state()
-        self._prev_position = np.array(agent_state.position, dtype=np.float64)
-        self._prev_rotation = _quat_to_xyzw(agent_state.rotation)
-        self._prev_velocity = np.zeros(3)
+        agent_state = self._hsim.get_agent_state()
+        self._prev_pos = np.array(agent_state.position, dtype=np.float64)
+        self._prev_rot = _quat_to_xyzw(agent_state.rotation)
+        self._prev_vel = np.zeros(3)
         self._current_accel = np.zeros(3, dtype=np.float32)
-        self._current_gyro = np.zeros(3, dtype=np.float32)
+        self._current_gyro  = np.zeros(3, dtype=np.float32)
         self._collision_detected = False
         self._forward_vel = 0.0
-        self._actual_vel = 0.0
-        self._delta_x = np.zeros(3, dtype=np.float64)
-        self._step_count = 0
-        self._current_imu = np.zeros(self._imu_dimension, dtype=np.float32)
-        self._accel_resultant_history.clear()
-        self._throttle_history.clear()
-        self._trajectory = [self._prev_position.copy()]
+        self._actual_vel  = 0.0
+        self._delta_x     = np.zeros(3, dtype=np.float64)
+        self._step_count  = 0
+        self._current_imu = np.zeros(self._imu_dim, dtype=np.float32)
+        self.geo_dist     = 0.0
+        self._accel_hist.clear()
+        self._throttle_hist.clear()
+        self._trajectory = [self._prev_pos.copy()]
 
         if self.render_mode == "human":
             self._render_frame()
 
         return self._get_obs(), self._get_info()
 
-    def step(self, action):
+    # ------------------------------------------------------------------
+    # Gym API — step
+    # ------------------------------------------------------------------
+
+    def step(self, action: np.ndarray):
         self.action = action
-        angular_vel_cmd = float(np.clip(action[0], -1.0, 1.0))
-        linear_vel_cmd = float(np.clip(action[1], 0.0, 1.0))
+        ang_cmd = float(np.clip(action[0], -1.0, 1.0))
+        lin_cmd = float(np.clip(action[1],  0.0, 1.0))
 
-        # Map normalised commands to physical velocities
-        ang_vel = angular_vel_cmd * self._cfg.max_angular_velocity  # rad/s
-        lin_vel = linear_vel_cmd * self._cfg.max_linear_velocity     # m/s
+        # Map normalised [-1,1] / [0,1] → physical velocities
+        ang_vel_deg = math.degrees(ang_cmd * self._cfg.max_angular_velocity)
+        lin_vel_ms  = lin_cmd * self._cfg.max_linear_velocity
 
-        # ── Custom frame_skip velocity integration ─────────────────────────
-        # We use VelocityControl manually (same as raw habitat-sim approach)
-        # to get frame_skip sub-steps with navmesh snapping between each.
-        self._vel_control.linear_velocity = np.array([0.0, 0.0, -lin_vel])
-        self._vel_control.angular_velocity = np.array([0.0, ang_vel, 0.0])
+        # ── Step through habitat-lab VelocityControl action ──────────────
+        # habitat-lab expects: {"velocity_control": {"angular_velocity": deg,
+        #                                            "linear_velocity":  m/s}}
+        initial_pos = np.array(self._hsim.get_agent_state().position, dtype=np.float64)
 
-        agent_state = self._sim.get_agent_state()
-        initial_position = np.array(agent_state.position, dtype=np.float64)
-        prev_rot_xyzw = _quat_to_xyzw(agent_state.rotation)
-        prev_quat = mn.Quaternion(
-            mn.Vector3(prev_rot_xyzw[0], prev_rot_xyzw[1], prev_rot_xyzw[2]),
-            prev_rot_xyzw[3],
-        )
-        prev_rigid_state = habitat_sim.RigidState(
-            prev_quat, mn.Vector3(*np.array(agent_state.position, dtype=np.float32))
-        )
+        # for _ in range(self._cfg.frame_skip):
+        step_action = {
+            "action": "velocity_control",
+            "action_args": {
+                "angular_velocity": ang_vel_deg,
+                "linear_velocity":  lin_vel_ms,
+            },
+        }
+        obs = self._env.step(step_action)
 
-        collision_detected = False
-        for _ in range(self._cfg.frame_skip):
-            target_rigid_state = self._vel_control.integrate_transform(
-                self._dt, prev_rigid_state
-            )
-            end_pos = self._sim.step_filter(
-                prev_rigid_state.translation,
-                target_rigid_state.translation,
-            )
-            # Collision detection: agent moved less than expected
-            # Compare per-sub-step displacement, not cumulative from origin
-            prev_pos = np.array(prev_rigid_state.translation, dtype=np.float32)
-            dist_moved_before = float(np.linalg.norm(
-                np.array(target_rigid_state.translation, dtype=np.float32) - prev_pos
-            ) ** 2)
-            dist_moved_after = float(np.linalg.norm(
-                np.array(end_pos, dtype=np.float32) - prev_pos
-            ) ** 2)
-            eps = 1e-6
-            if dist_moved_after + eps < dist_moved_before:
-                collision_detected = True
+        # Check if habitat-lab flagged a collision this sub-step
+        metrics = {}
+        try:
+            metrics = self._env.get_metrics()
+        except Exception:
+            pass
+        if metrics.get("collisions", {}).get("is_collision", False):
+            self._collision_detected = True
 
-            prev_rigid_state = habitat_sim.RigidState(
-                target_rigid_state.rotation, end_pos
-            )
+        # ── Extract image from last step's obs ────────────────────────────
+        self._current_image = np.array(obs["rgb"][:, :, :3], dtype=np.uint8)
 
-        self._collision_detected = collision_detected
-
-        # Set agent state from integrated position/rotation
-        new_state = habitat_sim.AgentState()
-        new_state.position = np.array(prev_rigid_state.translation, dtype=np.float32)
-        rot_xyzw = prev_rigid_state.rotation.xyzw
-        new_state.rotation = np.array(list(rot_xyzw), dtype=np.float32)
-        self._sim.get_agent(0).set_state(new_state)
-
-        # ── Update habitat-lab measures after physics step ────────────────────
-        self._update_measures()
-
-        # ── Get observation ─────────────────────────────────────────────────
-        sim_obs = self._sim.get_sensor_observations()
-        self._current_image = sim_obs["rgb"]
-
-        # ── Compute actual velocity from displacement ────────────────────────
-        final_position = np.array(prev_rigid_state.translation, dtype=np.float64)
+        # ── Velocity from displacement ─────────────────────────────────────
+        final_pos = np.array(self._hsim.get_agent_state().position, dtype=np.float64)
         total_time = self._cfg.frame_skip * self._dt
-        self._forward_vel = lin_vel  # commanded velocity (backward compat)
-        self._actual_vel = float(
-            np.linalg.norm(final_position - initial_position) / total_time
-        )
-        self._delta_x = final_position - initial_position
+        self._delta_x     = final_pos - initial_pos
+        self._forward_vel = lin_vel_ms
+        self._actual_vel  = float(np.linalg.norm(self._delta_x) / total_time)
 
-        # ── Synthesize IMU ──────────────────────────────────────────────────
+        # ── IMU ───────────────────────────────────────────────────────────
         self._current_imu = self._synthesize_imu()
-
-        # Update rolling histories for IMU observation features
-        resultant_accel = float(np.sqrt(self._current_accel[0]**2 + self._current_accel[1]**2))
-        self._accel_resultant_history.append(resultant_accel)
-        self._throttle_history.append(action[1])
+        resultant = float(np.linalg.norm(self._current_accel[:2]))
+        self._accel_hist.append(resultant)
+        self._throttle_hist.append(action[1])
 
         self._step_count += 1
-        self._trajectory.append(np.array(self._sim.get_agent_state().position, dtype=np.float64))
+        self._trajectory.append(final_pos.copy())
 
-        # ── Reward & termination ────────────────────────────────────────────
-        hab_metrics = self._get_habitat_metrics()
-        reward = float(hab_metrics.get("distance_to_goal_reward", 0.0)) + float(np.linalg.norm(self._delta_x))
+        # ── Reward ────────────────────────────────────────────────────────
+        try:
+            all_metrics = self._env.get_metrics()
+        except Exception:
+            all_metrics = {}
+
+        reward  = float(all_metrics.get("distance_to_goal_reward", 0.0))
+        reward += float(np.linalg.norm(self._delta_x))
         if self._collision_detected:
             reward -= 1.0
 
-        # Terminate if agent reaches goal (distance < goal_radius)
-        geo_dist = self._geodesic_distance(
-            np.array(self._sim.get_agent_state().position, dtype=np.float64),
-            self._goal_position,
-        )
-        terminated = geo_dist < self._cfg.goal_radius
-        truncated = False
+        # ── Termination ───────────────────────────────────────────────────
+        pos = np.array(self._hsim.get_agent_state().position, dtype=np.float64)
+        self.geo_dist  = self._hsim.geodesic_distance(pos, self._goal_position)
+        terminated = self.geo_dist < self._cfg.goal_radius
+        truncated  = False
 
         if self.render_mode == "human":
             self._render_frame()
 
         return self._get_obs(), reward, terminated, truncated, self._get_info()
 
-    # ── Rendering ──────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Scene helpers
+    # ------------------------------------------------------------------
+
+    def _random_scene(self) -> str:
+        if len(self._scene_paths) <= 1:
+            return self._scene_paths[0] if self._scene_paths else self._current_scene
+        return str(self._rng.choice(self._scene_paths))
+
+    # ------------------------------------------------------------------
+    # Top-down map / rendering
+    # ------------------------------------------------------------------
+
+    def _build_topdown_map(self):
+        bounds = self._pathfinder.get_bounds()
+        min_b = np.array([bounds[0][0], bounds[0][2]], dtype=np.float64)
+        max_b = np.array([bounds[1][0], bounds[1][2]], dtype=np.float64)
+        self._topdown_bounds = (min_b, max_b)
+        td = self._pathfinder.get_topdown_view(
+            meters_per_pixel=self._topdown_res, height=0.09
+        )
+        rgb = np.zeros((*td.shape, 3), dtype=np.uint8)
+        rgb[td]  = [200, 200, 200]
+        rgb[~td] = [40,  40,  40]
+        self._topdown_map = rgb
+
+    def _world_to_px(self, xz: np.ndarray):
+        if self._topdown_bounds is None:
+            return (0, 0)
+        min_b, _ = self._topdown_bounds
+        col = int((xz[0] - min_b[0]) / self._topdown_res)
+        row = int((xz[1] - min_b[1]) / self._topdown_res)
+        row = np.clip(row, 0, self._topdown_map.shape[0] - 1)
+        col = np.clip(col, 0, self._topdown_map.shape[1] - 1)
+        return (row, col)
+
+    def _render_topdown(self) -> np.ndarray:
+        if self._topdown_map is None:
+            self._build_topdown_map()
+        img = self._topdown_map.copy()
+
+        if len(self._trajectory) > 1:
+            for i in range(1, len(self._trajectory)):
+                p1 = self._world_to_px(self._trajectory[i-1][[0, 2]])
+                p2 = self._world_to_px(self._trajectory[i][[0, 2]])
+                cv2.line(img, (p1[1], p1[0]), (p2[1], p2[0]), (0, 200, 0), 1)
+
+        gp = self._world_to_px(self._goal_position[[0, 2]])
+        cv2.circle(img, (gp[1], gp[0]), 5, (0, 0, 255), -1)
+
+        state = self._hsim.get_agent_state()
+        ap = self._world_to_px(np.array(state.position)[[0, 2]])
+        cv2.circle(img, (ap[1], ap[0]), 4, (255, 0, 0), -1)
+        yaw = _quat_to_yaw(state.rotation)
+        ex = int(ap[1] + 10 * math.sin(yaw))
+        ey = int(ap[0] - 10 * math.cos(yaw))
+        cv2.line(img, (ap[1], ap[0]), (ex, ey), (255, 100, 0), 2)
+        return img
 
     def render(self):
         if self.render_mode == "rgb_array":
@@ -754,49 +628,44 @@ class HabitatNavEnv(gym.Env):
         self._render_frame()
 
     def _render_frame(self):
-        # ── Agent first-person view (left panel) ────────────────────────────
-        VIEW_H, VIEW_W = 240, 320
-        agent_view = cv2.cvtColor(cv2.resize(self._current_image, (VIEW_W, VIEW_H)),
-                                  cv2.COLOR_RGB2BGR)
+        VH, VW = 240, 320
+        agent_view = cv2.cvtColor(
+            cv2.resize(self._current_image, (VW, VH)), cv2.COLOR_RGB2BGR
+        )
         if self._goal_image is not None:
-            goal_view = cv2.cvtColor(cv2.resize(self._goal_image, (VIEW_W, VIEW_H)),
-                                     cv2.COLOR_RGB2BGR)
+            goal_view = cv2.cvtColor(
+                cv2.resize(self._goal_image, (VW, VH)), cv2.COLOR_RGB2BGR
+            )
         else:
-            goal_view = np.zeros((VIEW_H, VIEW_W, 3), dtype=np.uint8)
+            goal_view = np.zeros((VH, VW, 3), dtype=np.uint8)
 
-        # ── Top-down map (right panel) ──────────────────────────────────────
-        topdown = self._render_topdown()
-        # Scale top-down to match height of the two stacked views
-        target_h = VIEW_H * 2
-        td_h, td_w = topdown.shape[:2]
-        scale = target_h / td_h
-        target_w = int(td_w * scale)
-        topdown_resized = cv2.resize(topdown, (target_w, target_h),
-                                     interpolation=cv2.INTER_NEAREST)
+        td = self._render_topdown()
+        th = VH * 2
+        scale = th / td.shape[0]
+        tw = int(td.shape[1] * scale)
+        td_bgr = cv2.cvtColor(
+            cv2.resize(td, (tw, th), interpolation=cv2.INTER_NEAREST),
+            cv2.COLOR_RGB2BGR,
+        )
 
-        # Convert RGB to BGR for cv2
-        topdown_bgr = cv2.cvtColor(topdown_resized, cv2.COLOR_RGB2BGR)
-
-        # Draw info text on top-down map
-        pos = np.array(self._sim.get_agent_state().position, dtype=np.float64)
-        dist = self._geodesic_distance(pos, self._goal_position)
-        info_lines = [
-            f"step: {self._step_count}  dist: {dist:.2f}m",
-            f"coll: {'YES' if self._collision_detected else 'no'}  vel: {self._forward_vel:.2f}m/s",
-        ]
-        for i, line in enumerate(info_lines):
-            cv2.putText(topdown_bgr, line, (10, 20 + i * 22),
+        state = self._hsim.get_agent_state()
+        pos   = np.array(state.position, dtype=np.float64)
+        dist  = self._hsim.geodesic_distance(pos, self._goal_position)
+        for i, line in enumerate([
+            f"step:{self._step_count}  dist:{dist:.2f}m",
+            f"coll:{'YES' if self._collision_detected else 'no'}  vel:{self._forward_vel:.2f}m/s",
+        ]):
+            cv2.putText(td_bgr, line, (10, 20 + i*22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-        # ── Layout: [agent_view   | top-down map]
-        #           [goal_view    |             ] ──────────────────────────────
-        left = np.concatenate([agent_view, goal_view], axis=0)
-        combined = np.concatenate([left, topdown_bgr], axis=1)
+        left     = np.concatenate([agent_view, goal_view], axis=0)
+        combined = np.concatenate([left, td_bgr], axis=1)
         cv2.imshow("HabitatNav", combined)
         cv2.waitKey(1)
 
+    # ------------------------------------------------------------------
     def close(self):
         cv2.destroyAllWindows()
-        if hasattr(self, '_env') and self._env is not None:
+        if hasattr(self, "_env") and self._env is not None:
             self._env.close()
             self._env = None

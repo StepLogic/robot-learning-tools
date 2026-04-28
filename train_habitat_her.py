@@ -36,7 +36,7 @@ from jaxrl2.noise import OrnsteinUhlenbeckActionNoise
 from jaxrl2.wrappers.record_statistics import RecordEpisodeStatistics
 from jaxrl2.wrappers.timelimit import TimeLimit
 
-from habitat_env import HabitatNavEnv, HAS_HABITAT_LAB
+from habitat_env import HabitatNavEnv
 from configs.habitat_config import HabitatNavConfig
 from racer_imu_env import StackingWrapper
 from wrappers import (
