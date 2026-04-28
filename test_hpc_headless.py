@@ -12,6 +12,8 @@ Usage on HPC:
 import os
 import sys
 
+from habitat_wrappers import VideoRecorder
+
 
 # Apply headless settings first, before any habitat imports
 os.environ.pop("DISPLAY", None)
@@ -84,6 +86,7 @@ try:
     env = GoalImageWrapper(env, encoder=shared_encoder)
     goal_threshold = 2.0
     env = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
+    env =VideoRecorder(env, video_dir="test_videos", record_episodes=True)
     # env = reward_wrapper
 
     print("  HabitatNavEnv created: OK")

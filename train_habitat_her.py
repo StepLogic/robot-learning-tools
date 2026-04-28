@@ -192,19 +192,9 @@ def main(_):
     env = RecordEpisodeStatistics(env)
     env = TimeLimit(env, max_episode_steps=FLAGS.max_episode_steps)
 
-    # HER setup
-    her_ratio = FLAGS.her_ratio
-    feature_dim = env.observation_space.spaces['goal_features'].shape[0]
-    # HER threshold is in feature-space distance (L2 norm of MobileNet features),
-    # not geodesic meters.  When not explicitly set, use a reasonable default
-    # based on the feature dimensionality.
-    her_goal_threshold = FLAGS.her_goal_threshold if FLAGS.her_goal_threshold else 1.0
-    k_goal = 10
     print(f"Observation space : {env.observation_space}")
     print(f"Action space      : {env.action_space}")
-    print(f"HER ratio         : {her_ratio} (threshold: {her_goal_threshold})\n")
 
-    # ── Agent ─────────────────────────────────────────────────────────────────
     kwargs = dict(FLAGS.config) if FLAGS.config else {}
     agent = DrQLearner(
         FLAGS.seed,
@@ -309,19 +299,7 @@ def main(_):
         episode_reward += reward
         episode_length += 1
 
-        # ── HER episode buffer ──────────────────────────────────────────────────
-        # Extract current-frame features from stacked pixels for goal relabeling
-        current_features = next_obs["pixels"][-feature_dim:]
-        episode_transitions.append({
-            "obs": obs,
-            "action": action,
-            "reward": reward,
-            "next_obs": next_obs,
-            "terminated": bool(terminated),
-            "goal_features": next_obs.get("goal_features", np.zeros(feature_dim)),
-            "current_features": current_features,
-        })
-
+     
         # ── Distance covered tracking ──────────────────────────────────────────
         curr_pos = next_info.get("pos", None)
         if curr_pos is not None:
@@ -331,49 +309,6 @@ def main(_):
         # ── Episode end ──────────────────────────────────────────────────────
         if terminated or truncated:
             success = next_info.get("distance_to_goal", float("inf")) < goal_threshold if terminated else False
-
-            # ── HER: relabel transitions with future achieved goals ────────────
-            # Standard HER "future" strategy: for each transition, sample a
-            # future state from the same episode and use its visual features
-            # as the new goal. Reward is based on feature-space distance.
-            if her_ratio > 0 and len(episode_transitions) > 1:
-                ep_len = len(episode_transitions)
-
-                for idx in range(ep_len - 1):
-                    if np.random.random() > her_ratio:
-                        continue
-
-                    t = episode_transitions[idx]
-                    # Sample a future state as the virtual goal
-                    future_idx = np.random.randint(idx + 1, ep_len)
-                    future_t = episode_transitions[future_idx]
-                    new_goal_features = future_t["current_features"]
-
-                    # Relabel goal_features in obs
-                    her_obs = dict(t["obs"])
-                    her_next_obs = dict(t["next_obs"])
-                    her_obs["goal_features"] = new_goal_features.copy()
-                    her_next_obs["goal_features"] = new_goal_features.copy()
-
-                    # Reward: sparse bonus when the agent's state matches the
-                    # virtual goal (i.e. agent reached the future state)
-                    her_reward = -1.0
-                    agent_features = t["current_features"]
-                    feat_dist = np.linalg.norm(agent_features - new_goal_features)
-                    goal_reached = feat_dist < her_goal_threshold
-                    if goal_reached:
-                        her_reward += k_goal
-
-                    her_transition = dict(
-                        observations=her_obs,
-                        actions=t["action"],
-                        rewards=her_reward,
-                        next_observations=her_next_obs,
-                        masks=np.float32(0.0 if goal_reached else 1.0),
-                        dones=bool(goal_reached),
-                    )
-                    replay_buffer.insert(her_transition)
-
             episode_transitions = []
             hab_success = next_info.get("habitat_success", 0.0)
             hab_spl = next_info.get("habitat_spl", 0.0)
