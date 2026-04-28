@@ -12,7 +12,6 @@ Usage on HPC:
 import os
 import sys
 
-from train_habitat_her import HabitatRewardWrapper
 
 # Apply headless settings first, before any habitat imports
 os.environ.pop("DISPLAY", None)
@@ -59,16 +58,18 @@ print("\n=== Test 2: habitat-lab HabitatEnv (HabitatNavEnv) ===")
 try:
     from habitat_env import HabitatNavEnv
     from configs.habitat_config import HabitatNavConfig
-    from racer_imu_env import StackingWrapper
-    from wrappers import (
-        Logger,
-        MobileNetFeatureWrapper,
-        MobileNetV3Encoder,
-        GoalImageWrapper,
-        load_checkpoint,
-        save_checkpoint,
-    )
-    device = "cuda"
+    from train_habitat_her import HabitatRewardWrapper
+
+    # from racer_imu_env import StackingWrapper
+    # from wrappers import (
+    #     Logger,
+    #     MobileNetFeatureWrapper,
+    #     MobileNetV3Encoder,
+    #     GoalImageWrapper,
+    #     load_checkpoint,
+    #     save_checkpoint,
+    # )
+    # # device = "cuda"
     cfg = HabitatNavConfig(headless=True)
     env = HabitatNavEnv(cfg, render_mode="rgb_array")
     # env = StackingWrapper(env, num_stack=3, image_format="rgb")
