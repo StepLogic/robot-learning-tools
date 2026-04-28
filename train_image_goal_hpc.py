@@ -108,7 +108,7 @@ class TrainConfig:
     scene_dataset_path = "data/gibson"
     control_frequency = 10
     device = "cuda"
-    frame_skip = 3
+    frame_skip = 2
     max_linear_velocity = 0.5
     max_angular_velocity = 1.5
     imu_noise_std = 0.0
@@ -126,11 +126,11 @@ class TrainConfig:
     video_interval = 0
     video_length = 0
     log_interval = 1000
-    batch_size = 64
+    batch_size = 512
     checkpoint_interval = 1000
     save_dir = "./logs/"
     tqdm = True
-    max_steps = int(1e6)
+    max_steps = int(5e6)
 
 
 device = "cuda"

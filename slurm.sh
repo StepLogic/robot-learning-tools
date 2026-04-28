@@ -76,18 +76,7 @@ print('EGL loaded OK')
 echo "=== VULKAN CHECK ==="
 vulkaninfo --summary 2>/dev/null || echo "No vulkan"
 
-python train_habitat_her.py \
-    --replay_buffer_size 1000000 \
-    --max_steps 5000000 \
-    --batch_size 256 \
-    --start_training 10000 \
-    --debug_render False \
-    --video_interval 50000 \
-    --video_length 500 \
-    --checkpoint_interval 10000 \
-    --randomize_scenes True \
-    --log_interval 1000 \
-    --tqdm True
+python train_image_goal_hpc.py
 
 echo "============================================"
 echo "End time     : $(date)"
