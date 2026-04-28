@@ -71,7 +71,7 @@ try:
     device = "cuda"
     cfg = HabitatNavConfig(headless=True)
     env = HabitatNavEnv(cfg, render_mode="rgb_array")
-    env = StackingWrapper(env, num_stack=3, image_format="rgb")
+    # env = StackingWrapper(env, num_stack=3, image_format="rgb")
 
     # # Shared MobileNetV3 encoder for current obs and goal
     # shared_encoder = MobileNetV3Encoder(
