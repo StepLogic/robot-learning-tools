@@ -56,6 +56,10 @@ except Exception as e:
     sys.exit(1)
 
 
+
+
+
+
 from habitat_env import HabitatNavEnv
 from configs.habitat_config import HabitatNavConfig
 from jaxrl2.agents import DrQLearner
@@ -74,8 +78,41 @@ from wrappers import (
     save_checkpoint,
 )
 from habitat_wrappers import HabitatRewardWrapper
+class TrainConfig:
+    scene_path = "data/gibson/Cantwell.glb"
+    scene_dataset_path = "data/gibson"
+    control_frequency = 10
+    device = "cuda"
+    frame_skip = 3
+    max_linear_velocity = 0.5
+    max_angular_velocity = 1.5
+    imu_noise_std = 0.0
+    gpu_device_id = 0
+    seed = 42
+    debug_render = False
+    headless = True
+    goal_distance_scale = 3.0
+    goal_max_distance = 10.0
+    randomize_scenes = False
+    replay_buffer_size = int(1e6)
+
 device = "cuda"
-cfg = HabitatNavConfig(headless=True)
+habitat_cfg = HabitatNavConfig(
+        scene_path=TrainConfig.scene_path,
+        scene_dataset_path=TrainConfig.scene_dataset_path,
+        control_frequency=TrainConfig.control_frequency,
+        frame_skip=TrainConfig.frame_skip,
+        max_linear_velocity=TrainConfig.max_linear_velocity,
+        max_angular_velocity=TrainConfig.max_angular_velocity,
+        imu_noise_std=TrainConfig.imu_noise_std,
+        gpu_device_id=TrainConfig.gpu_device_id,
+        seed=TrainConfig.seed,
+        debug_render=TrainConfig.debug_render,
+        headless=not TrainConfig.debug_render,
+        goal_distance_scale=TrainConfig.goal_distance_scale,
+        goal_max_distance=TrainConfig.goal_max_distance,
+        randomize_scenes=TrainConfig.randomize_scenes,
+    )
 env = HabitatNavEnv(cfg, render_mode="rgb_array")
 env = StackingWrapper(env, num_stack=3, image_format="rgb")
 
@@ -94,17 +131,5 @@ env =VideoRecorder(env, video_dir="test_videos", record_episodes=True)
 replay_buffer = ReplayBuffer(
         env.observation_space,
         env.action_space,
-        int(1e6),
+        TrainConfig.replay_buffer_size,
     )
-
-print("  HabitatNavEnv created: OK")
-
-obs, info = env.reset()
-print(f"  Reset OK, obs keys: {list(obs.keys())}")
-
-obs, reward, terminated, truncated, info = env.step(np.array([0.0, 0.1]))
-print(f"  Step OK, reward: {reward:.4f}")
-
-env.close()
-print("  Test 2 PASSED")
-print("\n=== All tests passed ===")
