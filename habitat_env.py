@@ -188,8 +188,6 @@ class HabitatNavEnv(gym.Env):
         if self._cfg.headless:
             os.environ.pop("DISPLAY", None)
             os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-            os.environ.setdefault("EGL_VISIBLE_DEVICES", "0")
-            os.environ.setdefault("MAGNUM_GPU_VALIDATION", "ON")
 
         H, W = self._cfg.image_height, self._cfg.image_width
 

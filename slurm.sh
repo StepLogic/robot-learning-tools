@@ -68,8 +68,6 @@ nvidia-smi
 echo "=== DISPLAY (will unset for headless EGL) ==="
 echo $DISPLAY
 unset DISPLAY
-export EGL_VISIBLE_DEVICES=0
-export MAGNUM_GPU_VALIDATION=ON
 export QT_QPA_PLATFORM=offscreen
 echo "=== EGL CHECK ==="
 python -c "
