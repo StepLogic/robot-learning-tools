@@ -53,24 +53,33 @@ faulthandler.enable()
 flax.config.update("flax_use_orbax_checkpointing", True)
 POLICY_FOLDER = "robot_policy"
 
+
+def _str_to_bool(v) -> bool:
+    """Convert a string to bool, for argparse flags that accept 'True'/'False'."""
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("true", "1", "yes"):
+        return True
+    if v.lower() in ("false", "0", "no"):
+        return False
+    raise argparse.ArgumentTypeError(f"Expected True/False, got '{v}'")
+
+
 def _parse_args():
     """Parse command-line arguments and load the ml_collections config file."""
     parser = argparse.ArgumentParser(
         description="DrQ Habitat Image-Goal Navigation"
     )
-
-    # ── Environment flags ────────────────────────────────────────────────
-    parser.add_argument("--env_name", default="HabitatImageNav-v0")
     parser.add_argument("--scene_path", default="data/gibson/Cantwell.glb")
     parser.add_argument("--scene_dataset_path", default="")
-    parser.add_argument("--randomize_scenes", action="store_true")
+    parser.add_argument("--randomize_scenes", type=_str_to_bool, default=False)
     parser.add_argument("--control_frequency", type=int, default=5)
     parser.add_argument("--frame_skip", type=int, default=6)
     parser.add_argument("--max_linear_velocity", type=float, default=0.5)
     parser.add_argument("--max_angular_velocity", type=float, default=1.5)
     parser.add_argument("--imu_noise_std", type=float, default=0.0)
     parser.add_argument("--gpu_device_id", type=int, default=0)
-    parser.add_argument("--debug_render", action="store_true")
+    parser.add_argument("--debug_render", type=_str_to_bool, default=False)
 
     # ── Training flags ───────────────────────────────────────────────────
     parser.add_argument("--save_dir", default="./logs/")
@@ -84,8 +93,7 @@ def _parse_args():
     parser.add_argument("--max_steps", type=int, default=int(1e6))
     parser.add_argument("--start_training", type=int, default=int(5e3))
     parser.add_argument("--replay_buffer_size", type=int, default=int(1e5))
-    parser.add_argument("--no-tqdm", action="store_false", dest="tqdm")
-    parser.add_argument("--tqdm", action="store_true", default=True,
+    parser.add_argument("--tqdm", type=_str_to_bool, default=True,
                         help="Show tqdm progress bar.")
     parser.add_argument("--frame_stack", type=int, default=3)
     parser.add_argument("--mobilenet_blocks", type=int, default=13)
