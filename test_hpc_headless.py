@@ -89,7 +89,7 @@ try:
     print("  HabitatNavEnv created: OK")
 
     obs, info = env.reset()
-    print(f"  Reset OK, obs keys: {list(obs.keys())}, image shape: {obs['image'].shape}")
+    print(f"  Reset OK, obs keys: {list(obs.keys())}")
 
     obs, reward, terminated, truncated, info = env.step([0.0, 0.1])
     print(f"  Step OK, reward: {reward:.4f}")
