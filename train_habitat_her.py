@@ -104,9 +104,9 @@ class TrainConfig:
     scene_dataset_path = "data/gibson"
     control_frequency = 10
     device = "cuda"
-    frame_skip = 2
-    max_linear_velocity = 0.5
-    max_angular_velocity = 1.5
+    frame_skip = 3
+    max_linear_velocity = 4.0
+    max_angular_velocity = 20.0
     imu_noise_std = 0.0
     gpu_device_id = 0
     seed = 42

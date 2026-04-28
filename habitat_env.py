@@ -200,7 +200,7 @@ class HabitatNavEnv(gym.Env):
         self.render_mode = render_mode
 
         H, W = self._cfg.image_height, self._cfg.image_width
-        self._imu_dimension: int = 6
+        self._imu_dimension: int = 11
         # ── Build habitat config and dataset ──────────────────────────────────
         hab_cfg = _build_habitat_config(self._cfg)
 
@@ -496,10 +496,11 @@ class HabitatNavEnv(gym.Env):
         gd=self.geo_dist
         # print("geo_dist:",gd)
         mask=random.uniform(0,1)<0.3
+        mask_img=random.uniform(0,1)<0.3
         # mask= False
         if mask:
             gd = -1.0
-        return np.array([self.action[0],self.action[1], mean_resultant, mean_throttle,gd,float(int(mask))], dtype=np.float32)
+        return np.array([self.action[0],self.action[1], ax,ay,gx,gy,mean_resultant, mean_throttle,gd,float(int(mask)),float(int(mask_img))], dtype=np.float32)
 
     # ── Observation extraction ────────────────────────────────────────────
 

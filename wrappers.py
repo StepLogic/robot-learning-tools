@@ -446,9 +446,9 @@ class GoalImageWrapper(gym.Wrapper):
         goal_features = self._encode_goal(info)
         obs = dict(obs)
         obs["goal_features"] = goal_features
-        obs["imu"] = obs["imu"]
-        mask= random.random() < 0.3
-        if mask: # decouple this
+        # obs["imu"] = obs["imu"]
+        mask= obs["imu"][10]
+        if mask>0.0: # decouple this
             obs["goal_features"] = np.zeros_like(obs["goal_features"])
             # obs["goal_mask"] = np.zeros_like(self._observation_space["goal_mask"], dtype=np.float32)
         return obs, reward, terminated, truncated, info
@@ -457,7 +457,10 @@ class GoalImageWrapper(gym.Wrapper):
         obs, info = self.env.reset(**kwargs)
         goal_features = self._encode_goal(info)
         obs = dict(obs)
-        obs["goal_features"] = goal_features
+        mask= obs["imu"][10]
+        obs["goal_features"] =goal_features
+        if mask>0.0: # decouple this
+            obs["goal_features"] = np.zeros_like(obs["goal_features"])
         # obs["goal_mask"] = np.ones_like(self._observation_space["goal_mask"], dtype=np.float32)
         return obs, info
 
