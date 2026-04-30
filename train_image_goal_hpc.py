@@ -104,8 +104,8 @@ class TrainConfig:
     imu_noise_std = 0.0
     gpu_device_id = 0
     seed = 42
-    debug_render = True
-    headless = False
+    debug_render = False
+    headless = True
     goal_distance_scale = 3.0
     goal_max_distance = 10.0
     randomize_scenes = False
