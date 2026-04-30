@@ -1,13 +1,8 @@
 """
-Diagnostic test for Habitat headless HPC operation.
+Episodic curiosity training for Habitat image-goal navigation with DrQ.
 
-Tests both raw habitat_sim (like test_headless.py) and habitat-lab Env
-(like train_habitat_her.py) to narrow down segfault source.
-
-Usage on HPC:
-    unset DISPLAY
-    export QT_QPA_PLATFORM=offscreen
-    python test_hpc_headless.py
+Based on train_image_goal_hpc.py with episodic curiosity (Savinov et al. 2019)
+integrated into HabitatRewardWrapper for intrinsic exploration reward.
 """
 from collections import deque
 import datetime
@@ -21,9 +16,6 @@ from configs import drq_default
 from habitat_wrappers import VideoRecorder
 
 
-# Apply headless settings first, before any habitat imports
-os.environ.pop("DISPLAY", None)
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 print("=== Environment ===")
 print(f"DISPLAY={os.environ.get('DISPLAY', '<unset>')}")
@@ -59,8 +51,6 @@ try:
 except Exception as e:
     print(f"  Test 1 FAILED: {e}")
     sys.exit(1)
-
-
 
 
 
@@ -114,23 +104,26 @@ class TrainConfig:
     imu_noise_std = 0.0
     gpu_device_id = 0
     seed = 42
-    debug_render = False
-    headless = True
+    debug_render = True
+    headless = False
     goal_distance_scale = 3.0
     goal_max_distance = 10.0
-    randomize_scenes = True
+    randomize_scenes = False
     held_out_scenes = ["Airport", "Skokloster-castle", "van-gogh-room"]
     replay_buffer_size = int(1e6)
-    max_episode_steps = 3000
+    max_episode_steps = 1000
     start_training = 1000
     pretrained_checkpoint = None
-    video_interval = 1000
+    video_interval = 0
     log_interval = 1000
     batch_size = 128
     checkpoint_interval = 1000
+    eval_interval = 10000
+    num_eval_episodes = 10
     save_dir = "./logs/"
     tqdm = True
     max_steps = int(5e6)
+    random_mask_step = int(3e6)
 
 
 device = "cuda"
@@ -157,19 +150,19 @@ scene_paths = habitat_cfg.get_scene_paths()
 print(f"[Scenes] Training on {len(scene_paths)} scenes"
       f"{' (held out: ' + ', '.join(TrainConfig.held_out_scenes) + ')' if TrainConfig.held_out_scenes else ''}")
 
-env = HabitatNavEnv(habitat_cfg, render_mode="rgb_array")
+env = HabitatNavEnv(habitat_cfg, render_mode="human")
 env = StackingWrapper(env, num_stack=3, image_format="rgb")
 
 # # Shared MobileNetV3 encoder for current obs and goal
 shared_encoder = MobileNetV3Encoder(
     device=device,
-    num_blocks=13,
+    num_blocks=9,
     input_size=84,
 )
 env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
 env = GoalImageWrapper(env, encoder=shared_encoder)
 goal_threshold = 2.0
-env = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
+env = HabitatRewardWrapper(env, goal_threshold=goal_threshold,curiosity_memory_size=int(1e5))
 env = RecordEpisodeStatistics(env)
 env = TimeLimit(env, max_episode_steps=TrainConfig.max_episode_steps)
 kwargs = drq_default.get_config()
@@ -225,12 +218,67 @@ if TrainConfig.video_interval > 0:
     env = video_rec  # wrap so step/reset capture frames
     print(f"[Video] Recording full episodes every {TrainConfig.video_interval} steps → {video_dir}")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Evaluation
+# ═══════════════════════════════════════════════════════════════════════════════
+def run_evaluation(eval_env, agent, num_episodes, goal_threshold):
+    """Run deterministic evaluation episodes and return metrics dict."""
+    # Try to set eval mode on the reward wrapper
+    try:
+        eval_env.unwrapped.set_eval_mode(True)
+    except AttributeError:
+        pass
+
+    eval_returns = []
+    eval_lengths = []
+    eval_successes = []
+    eval_distances = []
+    eval_collisions = []
+
+    for ep in range(num_episodes):
+        ep_obs, ep_info = eval_env.reset()
+        ep_reward = 0.0
+        ep_length = 0
+        ep_collisions = 0
+        done = False
+
+        while not done:
+            action = agent.eval_actions(ep_obs)
+            ep_obs, reward, terminated, truncated, ep_info = eval_env.step(action)
+            ep_reward += reward
+            ep_length += 1
+            ep_collisions += int(ep_info.get("hit", False))
+            done = terminated or truncated
+
+        success = ep_info.get("distance_to_goal", float("inf")) < goal_threshold
+        eval_returns.append(ep_reward)
+        eval_lengths.append(ep_length)
+        eval_successes.append(float(success))
+        eval_distances.append(ep_info.get("distance_to_goal", 0.0))
+        eval_collisions.append(ep_collisions)
+
+    # Restore training mode
+    try:
+        eval_env.unwrapped.set_eval_mode(False)
+    except AttributeError:
+        pass
+
+    return {
+        "eval_return": float(np.mean(eval_returns)),
+        "eval_length": float(np.mean(eval_lengths)),
+        "eval_success_rate": float(np.mean(eval_successes)),
+        "eval_distance": float(np.mean(eval_distances)),
+        "eval_collisions": float(np.mean(eval_collisions)),
+        "eval_return_std": float(np.std(eval_returns)),
+    }
+
 # ── Training loop ────────────────────────────────────────────────────────
 obs, info = env.reset()
 episode_reward = 0.0
 episode_length = 0
 episode_distance = 0.0
 episode_collisions = 0
+episode_curiosity = 0.0
 episode_start_pos = info.get("pos", np.zeros(3)).copy()
 episode_prev_pos = episode_start_pos.copy()
 
@@ -254,13 +302,17 @@ for step in pbar:
         noise = ou_noise()
         action = np.clip(action + noise, env.action_space.low,
                             env.action_space.high)
-        
 
+    if not env.unwrapped.enable_random_masking and step>=TrainConfig.random_mask_step:
+        env.unwrapped.enable_random_masking=True
     # ── Environment step ─────────────────────────────────────────────────
     next_obs, reward, terminated, truncated, next_info = env.step(action)
+    if "distance_to_goal" in next_info:
+        episode_distance = next_info["distance_to_goal"]
     hit = next_info.get("hit", False)
     recent_collisions.append(float(hit))
     episode_collisions += int(hit)
+    episode_curiosity += next_info.get("curiosity", 0.0)
 
     # ── Store transition ─────────────────────────────────────────────────
     transition = dict(
@@ -292,6 +344,7 @@ for step in pbar:
             "distance": episode_distance,
             "collisions": episode_collisions,
             "collision_rate": collision_rate,
+            "curiosity": episode_curiosity,
             "habitat_success": float(hab_success),
             "habitat_spl": float(hab_spl),
         }, step)
@@ -299,6 +352,7 @@ for step in pbar:
         episode_length = 0
         episode_distance = 0.0
         episode_collisions = 0
+        episode_curiosity = 0.0
         obs, info = env.reset()
         episode_start_pos = info.get("pos", np.zeros(3)).copy()
         episode_prev_pos = episode_start_pos.copy()
@@ -320,6 +374,19 @@ for step in pbar:
         ckpt_dir = os.path.join(POLICY_FOLDER, f"checkpoint_{step}")
         save_checkpoint(agent, replay_buffer, ckpt_dir, step)
         print(f"[Checkpoint] Saved at step {step:,}")
+
+    # ── Evaluation ────────────────────────────────────────────────────────
+    if step % TrainConfig.eval_interval == 0 and step > TrainConfig.start_training:
+        eval_stats = run_evaluation(env, agent, TrainConfig.num_eval_episodes, goal_threshold)
+        logger.log_training(eval_stats, step)
+        print(
+            f"[Eval @ {step:,}]  "
+            f"return={eval_stats['eval_return']:.1f}±{eval_stats['eval_return_std']:.1f}  "
+            f"success={eval_stats['eval_success_rate']:.0%}  "
+            f"length={eval_stats['eval_length']:.0f}  "
+            f"dist={eval_stats['eval_distance']:.2f}m  "
+            f"collisions={eval_stats['eval_collisions']:.1f}"
+        )
 
     # ── Video recording ──────────────────────────────────────────────────
     if video_rec is not None and step > 0 and step % TrainConfig.video_interval == 0:
@@ -346,4 +413,3 @@ save_checkpoint(agent, replay_buffer, final_dir, TrainConfig.max_steps)
 print(f"\nTraining complete. Final checkpoint saved to {final_dir}")
 
 env.close()
-

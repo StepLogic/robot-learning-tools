@@ -231,6 +231,8 @@ episode_transitions = []
 # Running episode stats
 episode_successes = deque(maxlen=100)
 episode_distances = deque(maxlen=100)
+episode_collisions = 0
+rolling_collision_rate = deque(maxlen=100)
 
 pbar = tqdm.tqdm(range(start_step, TrainConfig.max_steps + 1),
                     disable=not TrainConfig.tqdm, desc="Training")
@@ -248,6 +250,8 @@ for step in pbar:
 
     # ── Environment step ─────────────────────────────────────────────────
     next_obs, reward, terminated, truncated, next_info = env.step(action)
+    if "distance_to_goal" in next_info:
+        episode_distance = next_info["distance_to_goal"]
 
     # ── Store transition ─────────────────────────────────────────────────
     transition = dict(
@@ -261,6 +265,11 @@ for step in pbar:
     replay_buffer.insert(transition)
     episode_reward += reward
     episode_length += 1
+
+    # ── Collision tracking ───────────────────────────────────────────────
+    collided = next_info.get("hit", False)
+    episode_collisions += int(collided)
+    rolling_collision_rate.append(float(collided))
 
     # ── Episode end ──────────────────────────────────────────────────────
     if terminated or truncated:
@@ -276,12 +285,15 @@ for step in pbar:
             "length": episode_length,
             "success": float(success),
             "distance": episode_distance,
+            "collisions": episode_collisions,
+            "collision_rate": np.mean(rolling_collision_rate),
             "habitat_success": float(hab_success),
             "habitat_spl": float(hab_spl),
         }, step)
         episode_reward = 0.0
         episode_length = 0
         episode_distance = 0.0
+        episode_collisions = 0
         obs, info = env.reset()
         episode_start_pos = info.get("pos", np.zeros(3)).copy()
         episode_prev_pos = episode_start_pos.copy()
@@ -323,6 +335,7 @@ for step in pbar:
             "buffer": len(replay_buffer),
             "ep_rew": f"{np.mean(logger.episode_returns):.1f}" if logger.episode_returns else "0.0",
             "sr": f"{np.mean(episode_successes):.0%}" if episode_successes else "0%",
+            "coll": f"{np.mean(rolling_collision_rate):.2f}" if rolling_collision_rate else "0.00",
             "dist": f"{np.mean(episode_distances):.2f}m" if episode_distances else "0m",
         })
         logger.print_status(step, TrainConfig.max_steps, extra_stats={

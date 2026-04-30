@@ -200,7 +200,7 @@ class HabitatNavEnv(gym.Env):
         self.render_mode = render_mode
 
         H, W = self._cfg.image_height, self._cfg.image_width
-        self._imu_dimension: int = 11
+        self._imu_dimension: int = 10
         # ── Build habitat config and dataset ──────────────────────────────────
         hab_cfg = _build_habitat_config(self._cfg)
 
@@ -273,8 +273,15 @@ class HabitatNavEnv(gym.Env):
         self._topdown_resolution: float = 0.02  # meters per pixel
         self._trajectory: list = []  # agent positions for trail
         self.goals=[]
+        self.enable_random_masking=False
+        self.random_mask_prob=0.1
         self.geo_dist=0.0
         self.action =np.zeros(2,dtype=np.float32)
+
+    def set_random_masking(self, enabled: bool = True, mask_prob: float = 0.1):
+        """Toggle random goal masking for curriculum learning."""
+        self.enable_random_masking = enabled
+        self.random_mask_prob = mask_prob
     # ── Scene randomization ─────────────────────────────────────────────
 
     def _switch_scene(self, scene_path: str):
@@ -399,7 +406,7 @@ class HabitatNavEnv(gym.Env):
         
         for _ in range(max_attempts):
             # Sample random distance and angle in agent's local frame
-            distance = self._rng.uniform(0.01, max_distance)  # 3 to 20 meters
+            distance = self._rng.uniform(self._cfg.goal_radius + 0.5, max_distance)
             angle = self._rng.uniform(0, 2 * math.pi)  # full 360 degrees
             
             # Convert polar to Cartesian in agent's local frame
@@ -424,7 +431,7 @@ class HabitatNavEnv(gym.Env):
             # Verify it's navigable and within distance constraint
             if self._pathfinder.is_navigable(snapped_goal):
                 geodesic_dist = self._sim.geodesic_distance(start_pos, snapped_goal)
-                if geodesic_dist <= max_distance and geodesic_dist >= 0.001:
+                if geodesic_dist <= max_distance and geodesic_dist >= self._cfg.goal_radius + 0.5:
                     goal_pos = list(snapped_goal)
                     break
             max_distance *= 1.2
@@ -495,12 +502,12 @@ class HabitatNavEnv(gym.Env):
         mean_throttle = float(np.mean(self._throttle_history)) if self._throttle_history else 0.0
         gd=self.geo_dist
         # print("geo_dist:",gd)
-        mask=random.uniform(0,1)<0.3
-        mask_img=random.uniform(0,1)<0.3
+        # mask=random.uniform(0,1)<0.1
+        mask_img=random.uniform(0,1)<0.1
         # mask= False
-        if mask:
+        if self.enable_random_masking and mask_img:
             gd = -1.0
-        return np.array([self.action[0],self.action[1], ax,ay,gx,gy,mean_resultant, mean_throttle,gd,float(int(mask)),float(int(mask_img))], dtype=np.float32)
+        return np.array([self.action[0],self.action[1], ax,ay,gx,gy,mean_resultant, mean_throttle,gd,float(int(mask_img))], dtype=np.float32)
 
     # ── Observation extraction ────────────────────────────────────────────
 
@@ -562,7 +569,7 @@ class HabitatNavEnv(gym.Env):
             "goal_image": self._goal_image,
             "distance_to_goal": self.geo_dist,
             "goal_pos": self._goal_position,
-            "habitat_success": hab_metrics.get("success", 0.0),
+            "habitat_success": float(self.geo_dist < self._cfg.goal_radius),
             "habitat_spl": hab_metrics.get("spl", 0.0),
             "habitat_distance_to_goal_reward": hab_metrics["distance_to_goal_reward"],
         }

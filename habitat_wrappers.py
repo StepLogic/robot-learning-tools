@@ -22,13 +22,19 @@ class HabitatRewardWrapper(gym.Wrapper):
       + Large bonus (k_goal) for reaching within goal_threshold of goal
       - Collision penalty (k_collision)
 
+    Episodic curiosity (Savinov et al. 2019, https://arxiv.org/abs/1810.02274):
+      + Intrinsic reward for novel states within each episode via NN cosine
+        distance in MobileNetV3 feature space.
+
     Commented-out terms (steering penalty, stall detection, raw movement bonus)
     can be re-enabled by uncommenting the corresponding lines in step().
     """
 
     def __init__(self, env, goal_threshold=0.5,
                  k_dist=1.0, k_delta_x=1.0, k_throttle=1.0,
-                 k_goal=10.0, k_collision=0.001, k_steering=0.1):
+                 k_goal=10.0, k_collision=0.001, k_steering=0.01,
+                 k_explore_vel=1.0, k_curiosity=0.01,
+                 curiosity_memory_size=1000):
         super().__init__(env)
         self.goal_threshold = goal_threshold
         self.k_dist = k_dist
@@ -37,83 +43,109 @@ class HabitatRewardWrapper(gym.Wrapper):
         self.k_goal = k_goal
         self.k_collision = k_collision
         self.k_steering = k_steering
+        self.k_explore_vel = k_explore_vel
+        self.k_curiosity = k_curiosity
+        self.curiosity_memory = deque(maxlen=curiosity_memory_size)
+        self.curiosity_memory_size = curiosity_memory_size
+        self._per_frame_dim = None
         self.deltas = deque(maxlen=5)  
         self.steering_hist = deque(maxlen=10)
         
-        self.throttle_hist = deque(maxlen=10)  
+        self.throttle_hist = deque(maxlen=10)
         self._prev_distance = float("inf")
         self.distance_covered = 0
+        self._start_position = None
+        self.eval_mode = False
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         self.distance_covered = 0
         self._prev_distance = info.get("distance_to_goal", float("inf"))
+        self._start_position = info.get("pos", None)
+        self.curiosity_memory.clear()
         return obs, info
 
     def step(self, action):
         obs, _, terminated, truncated, info = self.env.step(action)
 
-        reward = -1
-
-        # # Distance improvement toward goal
-        # curr_distance = info["distance_to_goal"]
-        # delta_dist = self._prev_distance - curr_distance
-
-        # # Movement bonus: reward driving across the environment
-        habitat_distance_to_goal_reward = info["habitat_distance_to_goal_reward"]
-        delta_x = info["delta_x"]
-        # self.distance_covered += delta_x
-        # # print(("delta_x"),delta_x)
-        # # self.deltas.append(delta_x[0])
-        # # Throttle bonus: encourage forward driving
+        reward = -1.0
+        goal_masked = obs["imu"][-1] > 0.0
+        info["curiosity"] = 0.0
+        has_goal = not goal_masked
         mean_throttle = float(np.mean(self.unwrapped._throttle_history))
-        if  mean_throttle < 0.1:
-            reward -= 1
+        curiosity_bonus = self._compute_episodic_curiosity(obs["pixels"])
+        # if not has_goal:
+        reward -= curiosity_bonus
+        # print(curiosity_bonus)
+        info["curiosity"] = curiosity_bonus
 
-        # reward += float(np.linalg.norm(habitat_distance_to_goal_reward))
-        # reward += float(np.linalg.norm(delta_x))
-        # reward +=  mean_throttle *
+        # else:
+        #     # ── Goal-directed reward ──────────────────────────────────────────
+        #     curr_distance = info["distance_to_goal"]
+        #     delta_dist = self._prev_distance - curr_distance
+        # reward += sel  # positive when getting closer
+        #     self._prev_distance = curr_distance
+
+        # Small throttle penalty for standing still
+
+        if mean_throttle < 0.1:
+            reward -= 1.0
+
+        # Steering penalty: discourage excessive turning / circling
         reward -= abs(action[0])
-        
+
+        # Circularity detection: high variance in steering with low net progress
         self.steering_hist.append(action[0])
         self.throttle_hist.append(action[1])
-        # reward -= float(np.std(self.deltas))  
-        # reward -= float(np.std(self.throttle_hist))
-        # reward -= float(np.std(self.steering_hist))*0.1
-        # reward -= float(np.mean(self.steering_hist))
+
         # Goal reached
         if info["habitat_success"] > 0.0:
-            reward += 1000
+            reward += self.k_goal
             print("Goal Reached")
             terminated = True
 
-        # # # Collision penalty
+        # Collision penalty (applies in both modes)
         if info.get("hit", False):
             reward -= 1.0
-            # truncated = True
+            if self.eval_mode:
+                terminated = True
 
-        # Steering penalty (encourages straighter paths)
-        # reward -= self.k_steering * abs(action[0])
-
-        # # Stall detection based on position change (more robust than velocity)
-        # curr_position = info.get("position", None)
-        # if curr_position is not None and self._prev_position is not None:
-        #     position_delta = ((curr_position[0] - self._prev_position[0])**2 + 
-        #                     (curr_position[2] - self._prev_position[2])**2)**0.5
-            
-        #     if position_delta < self.stall_threshold:
-        #         self._stall_count += 1
-        #     else:
-        #         self._stall_count = 0
-                
-        #     self._prev_position = curr_position
-            
-        # if self._stall_count > self.stall_limit:
-        #     truncated = True
-
-        # self._prev_distance = curr_distance
         return obs, reward, terminated, truncated, info
-# ═══════════════════════════════════════════════════════════════════════════════
+
+    def set_eval_mode(self, enabled: bool = True):
+        """Toggle eval mode where collisions terminate the episode."""
+        self.eval_mode = enabled
+
+    def _compute_episodic_curiosity(self, stacked_pixels):
+        """Episodic curiosity via nearest-neighbor cosine distance in feature space.
+
+        Stores L2-normalised features in the episodic buffer and uses a
+        vectorised matrix multiply for the NN search (no Python loop).
+
+        Args:
+            stacked_pixels: (3 * per_frame_dim,) concatenated per-frame features.
+        Returns:
+            float: cosine distance (0-2 range, higher = more novel).
+        """
+        # breakpoint()
+        if self._per_frame_dim is None:
+            self._per_frame_dim = stacked_pixels.shape[-1] // 3
+        feat_norm = stacked_pixels[-self._per_frame_dim:]
+        feat_norm = feat_norm / (np.linalg.norm(feat_norm) + 1e-8)
+
+        if not self.curiosity_memory:
+            self.curiosity_memory.append(feat_norm.copy())
+            return 0.0
+
+        # Vectorised NN search: (N, D) @ (D,) → (N,)
+        memory = np.array(self.curiosity_memory, dtype=np.float32)
+        similarities = memory @ feat_norm
+        nn_sim = float(np.mean(similarities))
+        nn_sim = max(0.0, min(nn_sim, 1.0))
+        self.curiosity_memory.append(feat_norm.copy())
+        return nn_sim
+
+    # ═══════════════════════════════════════════════════════════════════════════════
 # Checkpoint helpers (reuse from wrappers.py)
 # ═══════════════════════════════════════════════════════════════════════════════
 
