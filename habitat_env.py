@@ -46,6 +46,7 @@ from habitat import Env as HabitatEnv
 from habitat.config.default import get_config as get_habitat_config
 from habitat.config.default_structured_configs import (
     VelocityControlActionConfig,
+    ProximitySensorConfig,
 )
 from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
 from habitat.tasks.nav.nav import NavigationEpisode, NavigationGoal
@@ -141,6 +142,10 @@ def _build_habitat_config(cfg: HabitatNavConfig) -> "OmegaConf.DictConfig":
     del base_cfg.habitat.task.measurements.top_down_map
     # Keep: distance_to_goal, success, spl, distance_to_goal_reward
 
+    # Add proximity sensor
+    if cfg.proximity_sensor:
+        base_cfg.habitat.task.lab_sensors.proximity_sensor = OmegaConf.structured(ProximitySensorConfig())
+
     # Use VelocityAction for continuous control
     max_ang_deg = math.degrees(cfg.max_angular_velocity)
     vc = OmegaConf.structured(VelocityControlActionConfig(
@@ -200,7 +205,7 @@ class HabitatNavEnv(gym.Env):
         self.render_mode = render_mode
 
         H, W = self._cfg.image_height, self._cfg.image_width
-        self._imu_dimension: int = 10
+        self._imu_dimension: int = 11
         # ── Build habitat config and dataset ──────────────────────────────────
         hab_cfg = _build_habitat_config(self._cfg)
 
@@ -258,6 +263,7 @@ class HabitatNavEnv(gym.Env):
         self._actual_vel: float = 0.0
         self._delta_x: np.ndarray = np.zeros(3, dtype=np.float64)
         self._collision_detected: bool = False
+        self._proximity: float = -1.0
         self._current_image: np.ndarray = np.zeros((H, W, 3), dtype=np.uint8)
      
         self._current_imu: np.ndarray = np.zeros(self._imu_dimension, dtype=np.float32)
@@ -507,7 +513,7 @@ class HabitatNavEnv(gym.Env):
         # mask= False
         if self.enable_random_masking and mask_img:
             gd = -1.0
-        return np.array([self.action[0],self.action[1], ax,ay,gx,gy,mean_resultant, mean_throttle,gd,float(int(mask_img))], dtype=np.float32)
+        return np.array([self.action[0],self.action[1], ax,ay,gx,gy,mean_resultant, mean_throttle,gd,float(int(mask_img)), self._proximity], dtype=np.float32)
 
     # ── Observation extraction ────────────────────────────────────────────
 
@@ -604,7 +610,14 @@ class HabitatNavEnv(gym.Env):
 
         # Re-get observations from the correct position
         sim_obs = self._sim.get_sensor_observations()
-        obs["rgb"] = sim_obs["rgb"]
+        rgb = sim_obs["rgb"]
+        if rgb.ndim == 3 and rgb.shape[2] == 4:
+            rgb = rgb[..., :3]
+        obs["rgb"] = rgb
+
+        # Extract proximity sensor reading (Habitat-Lab key is "proximity")
+        prox = obs.get("proximity", np.array([-1.0], dtype=np.float32))
+        self._proximity = float(prox.item() if hasattr(prox, "item") else prox)
 
         # Reset habitat-lab measures (e.g. SPL needs _previous_position set)
         self._env._task.measurements.reset_measures(
@@ -711,7 +724,21 @@ class HabitatNavEnv(gym.Env):
 
         # ── Get observation ─────────────────────────────────────────────────
         sim_obs = self._sim.get_sensor_observations()
-        self._current_image = sim_obs["rgb"]
+        rgb = sim_obs["rgb"]
+        if rgb.ndim == 3 and rgb.shape[2] == 4:
+            rgb = rgb[..., :3]
+        self._current_image = rgb
+
+        # Extract proximity sensor reading
+        if "proximity_sensor" in self._env._task.sensor_suite.sensors:
+            prox_sensor = self._env._task.sensor_suite.sensors["proximity_sensor"]
+            val = prox_sensor.get_observation(
+                observations=sim_obs,
+                episode=self._env._current_episode,
+            )
+            self._proximity = float(val[0])
+        else:
+            self._proximity = -1.0
 
         # ── Compute actual velocity from displacement ────────────────────────
         final_position = np.array(prev_rigid_state.translation, dtype=np.float64)

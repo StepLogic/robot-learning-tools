@@ -26,6 +26,7 @@ class HabitatNavConfig:
     goal_radius: float = 1.0         # Success radius for DistanceToGoal
     goal_distance_scale: float = 3.0  # Exponential rate for goal distance (meters, lower = closer goals)
     goal_max_distance: float = 10.0   # Cap on sampled goal distance (meters)
+    proximity_sensor: bool = True      # Enable habitat-lab ProximitySensor
     randomize_scenes: bool = False     # Randomly switch scenes across episodes
     held_out_scenes: List[str] = field(default_factory=list)  # scene names excluded from training pool
 

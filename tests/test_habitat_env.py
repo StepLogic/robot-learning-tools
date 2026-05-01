@@ -108,7 +108,8 @@ class TestHabitatNavEnv:
         env = HabitatNavEnv(config=cfg)
         obs, info = env.reset()
         assert obs["image"].shape == (120, 160, 3)
-        assert obs["imu"].shape == (6,)
+        assert obs["imu"].shape == (11,)
+        assert obs["imu"][-1] >= -1.0, "proximity should be >= -1.0"
         assert "goal_image" in info
         assert "actual_vel" in info, "actual_vel key missing from info"
         env.close()
@@ -122,7 +123,9 @@ class TestHabitatNavEnv:
         env = HabitatNavEnv(config=cfg)
         env.reset()
         action = np.array([0.0, 0.5], dtype=np.float32)
-        _, _, _, _, info = env.step(action)
+        obs, _, _, _, info = env.step(action)
         assert "actual_vel" in info, "actual_vel key missing from info"
         assert isinstance(info["actual_vel"], float)
+        assert obs["imu"].shape == (11,), "IMU shape should be (11,) after step"
+        assert obs["imu"][-1] >= -1.0, "proximity should be >= -1.0 after step"
         env.close()
