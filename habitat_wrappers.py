@@ -1,5 +1,6 @@
 
 
+import math
 import os
 from collections import deque
 import cv2
@@ -69,6 +70,12 @@ class HabitatRewardWrapper(gym.Wrapper):
         obs, _, terminated, truncated, info = self.env.step(action)
 
         reward = -1.0
+
+        # Proximity penalty: smoothly escalate as agent nears obstacles
+        proximity = float(obs["imu"][-1])
+        if proximity >= 0:
+            reward -= math.exp(-proximity)
+
         goal_masked = obs["imu"][-1] > 0.0
         info["curiosity"] = 0.0
         has_goal = not goal_masked
