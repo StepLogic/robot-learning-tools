@@ -86,6 +86,50 @@ class TestHabitatRewardWrapper:
         _, reward, _, _, _ = wrapper.step(np.array([0.5, 0.5]))
         assert abs(reward + 0.25) < 1e-6, f"Expected -0.25, got {reward}"
 
+    def test_proximity_penalty(self):
+        from train_habitat_her import HabitatRewardWrapper
+        import math
+
+        # Near obstacle (proximity=0.1) → significant penalty
+        env_near = self.MockEnv()
+        # Override step() to return low proximity imu
+        orig_step = env_near.step
+        def step_near(action):
+            obs, _, _, _, info = orig_step(action)
+            obs["imu"][-1] = 0.1
+            return obs, 0.0, False, False, info
+        env_near.step = step_near
+
+        wrapper_near = HabitatRewardWrapper(env_near)
+        wrapper_near.reset()
+        _, reward_near, _, _, _ = wrapper_near.step(np.array([0.0, 0.5]))
+        # Base reward is -1.0, plus steering penalty 0, throttle check varies
+        # But proximity penalty of exp(-0.1) ≈ 0.905 must be present
+        assert reward_near <= -1.9, f"Expected penalty >= 0.9 on top of base -1.0, got {reward_near:.4f}"
+
+        # Far from obstacle (proximity=5.0) → negligible penalty
+        env_far = self.MockEnv()
+        orig_step_far = env_far.step
+        def step_far(action):
+            obs, _, _, _, info = orig_step_far(action)
+            obs["imu"][-1] = 5.0
+            return obs, 0.0, False, False, info
+        env_far.step = step_far
+
+        wrapper_far = HabitatRewardWrapper(env_far)
+        wrapper_far.reset()
+        _, reward_far, _, _, _ = wrapper_far.step(np.array([0.0, 0.5]))
+        penalty_far = math.exp(-5.0)
+        assert penalty_far < 0.01, f"Far proximity penalty should be negligible, got {penalty_far:.4f}"
+
+        # Sentinel -1.0 → should NOT apply proximity penalty (guard)
+        env_sentinel = self.MockEnv()
+        wrapper_sentinel = HabitatRewardWrapper(env_sentinel)
+        wrapper_sentinel.reset()
+        _, reward_sentinel, _, _, _ = wrapper_sentinel.step(np.array([0.0, 0.5]))
+        # With sentinel -1.0 and guard, no proximity penalty applied
+        assert reward_sentinel > -2.0, f"Sentinel should not trigger proximity penalty, got {reward_sentinel:.4f}"
+
 
 # ============================================================================
 # HabitatNavEnv tests (only if habitat_sim is installed)
