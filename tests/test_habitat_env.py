@@ -30,7 +30,9 @@ class TestHabitatRewardWrapper:
             self._position = position if position is not None else np.zeros(3)
 
         def reset(self, **kwargs):
-            return {"pixels": np.zeros(8, dtype=np.float32)}, {
+            obs = {"pixels": np.zeros(8, dtype=np.float32),
+                   "imu": np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0], dtype=np.float32)}
+            return obs, {
                 "distance_to_goal": self._distance,
                 "forward_vel": self._forward_vel,
                 "actual_vel": self._actual_vel,
@@ -48,7 +50,9 @@ class TestHabitatRewardWrapper:
                 "hit": self._hit,
                 "position": self._position,
             }
-            return {"pixels": np.zeros(8, dtype=np.float32)}, 0.0, False, False, info
+            obs = {"pixels": np.zeros(8, dtype=np.float32),
+                   "imu": np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0], dtype=np.float32)}
+            return obs, 0.0, False, False, info
 
     def test_goal_condition_habitat_success(self):
         from train_habitat_her import HabitatRewardWrapper
