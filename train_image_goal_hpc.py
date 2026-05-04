@@ -128,9 +128,12 @@ class TrainConfig:
     log_interval = 1000
     batch_size = 128
     checkpoint_interval = 1000
+    eval_interval = 10000
+    num_eval_episodes = 10
     save_dir = "./logs/"
     tqdm = True
     max_steps = int(5e6)
+    random_mask_step = int(3e6)
 
 
 device = "cuda"
@@ -159,6 +162,8 @@ print(f"[Scenes] Training on {len(scene_paths)} scenes"
 
 env = HabitatNavEnv(habitat_cfg, render_mode="rgb_array")
 env = StackingWrapper(env, num_stack=3, image_format="rgb")
+
+env = VideoRecorder(env, video_dir="test_videos")
 
 # # Shared MobileNetV3 encoder for current obs and goal
 shared_encoder = MobileNetV3Encoder(
@@ -225,6 +230,58 @@ if TrainConfig.video_interval > 0:
     env = video_rec  # wrap so step/reset capture frames
     print(f"[Video] Recording full episodes every {TrainConfig.video_interval} steps → {video_dir}")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Evaluation
+# ═══════════════════════════════════════════════════════════════════════════════
+def run_evaluation(eval_env, agent, num_episodes, goal_threshold):
+    """Run deterministic evaluation episodes and return metrics dict."""
+    try:
+        eval_env.unwrapped.set_eval_mode(True)
+    except AttributeError:
+        pass
+
+    eval_returns = []
+    eval_lengths = []
+    eval_successes = []
+    eval_distances = []
+    eval_collisions = []
+
+    for ep in range(num_episodes):
+        ep_obs, ep_info = eval_env.reset()
+        ep_reward = 0.0
+        ep_length = 0
+        ep_collisions = 0
+        done = False
+
+        while not done:
+            action = agent.eval_actions(ep_obs)
+            ep_obs, reward, terminated, truncated, ep_info = eval_env.step(action)
+            ep_reward += reward
+            ep_length += 1
+            ep_collisions += int(ep_info.get("hit", False))
+            done = terminated or truncated
+
+        success = ep_info.get("distance_to_goal", float("inf")) < goal_threshold
+        eval_returns.append(ep_reward)
+        eval_lengths.append(ep_length)
+        eval_successes.append(float(success))
+        eval_distances.append(ep_info.get("distance_to_goal", 0.0))
+        eval_collisions.append(ep_collisions)
+
+    try:
+        eval_env.unwrapped.set_eval_mode(False)
+    except AttributeError:
+        pass
+
+    return {
+        "eval_return": float(np.mean(eval_returns)),
+        "eval_length": float(np.mean(eval_lengths)),
+        "eval_success_rate": float(np.mean(eval_successes)),
+        "eval_distance": float(np.mean(eval_distances)),
+        "eval_collisions": float(np.mean(eval_collisions)),
+        "eval_return_std": float(np.std(eval_returns)),
+    }
+
 # ── Training loop ────────────────────────────────────────────────────────
 obs, info = env.reset()
 episode_reward = 0.0
@@ -256,10 +313,14 @@ for step in pbar:
         noise = ou_noise()
         action = np.clip(action + noise, env.action_space.low,
                             env.action_space.high)
-        
+
+    if not env.unwrapped.enable_random_masking and step >= TrainConfig.random_mask_step:
+        env.unwrapped.enable_random_masking = True
 
     # ── Environment step ─────────────────────────────────────────────────
     next_obs, reward, terminated, truncated, next_info = env.step(action)
+    if "distance_to_goal" in next_info:
+        episode_distance = next_info["distance_to_goal"]
     hit = next_info.get("hit", False)
     recent_collisions.append(float(hit))
     episode_collisions += int(hit)
@@ -327,6 +388,19 @@ for step in pbar:
         ckpt_dir = os.path.join(POLICY_FOLDER, f"checkpoint_{step}")
         save_checkpoint(agent, replay_buffer, ckpt_dir, step)
         print(f"[Checkpoint] Saved at step {step:,}")
+
+    # ── Evaluation ────────────────────────────────────────────────────────
+    if step % TrainConfig.eval_interval == 0 and step > TrainConfig.start_training:
+        eval_stats = run_evaluation(env, agent, TrainConfig.num_eval_episodes, goal_threshold)
+        logger.log_training(eval_stats, step)
+        print(
+            f"[Eval @ {step:,}]  "
+            f"return={eval_stats['eval_return']:.1f}±{eval_stats['eval_return_std']:.1f}  "
+            f"success={eval_stats['eval_success_rate']:.0%}  "
+            f"length={eval_stats['eval_length']:.0f}  "
+            f"dist={eval_stats['eval_distance']:.2f}m  "
+            f"collisions={eval_stats['eval_collisions']:.1f}"
+        )
 
     # ── Video recording ──────────────────────────────────────────────────
     if video_rec is not None and step > 0 and step % TrainConfig.video_interval == 0:

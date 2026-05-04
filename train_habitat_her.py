@@ -150,6 +150,8 @@ habitat_cfg = HabitatNavConfig(
 env = HabitatNavEnv(habitat_cfg, render_mode="human" if TrainConfig.debug_render else "rgb_array")
 env = StackingWrapper(env, num_stack=3, image_format="rgb")
 
+env = VideoRecorder(env, video_dir="test_videos")
+
 # # Shared MobileNetV3 encoder for current obs and goal
 shared_encoder = MobileNetV3Encoder(
     device=device,
@@ -160,7 +162,6 @@ env = MobileNetFeatureWrapper(env, encoder=shared_encoder)
 env = GoalImageWrapper(env, encoder=shared_encoder)
 goal_threshold = 2.0
 env = HabitatRewardWrapper(env, goal_threshold=goal_threshold)
-env = VideoRecorder(env, video_dir="test_videos")
 env = RecordEpisodeStatistics(env)
 env = TimeLimit(env, max_episode_steps=TrainConfig.max_episode_steps)
 kwargs = drq_default.get_config()

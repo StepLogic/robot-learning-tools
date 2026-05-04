@@ -49,20 +49,10 @@ class HabitatRewardWrapper(gym.Wrapper):
         self.curiosity_memory = deque(maxlen=curiosity_memory_size)
         self.curiosity_memory_size = curiosity_memory_size
         self._per_frame_dim = None
-        self.deltas = deque(maxlen=5)  
-        self.steering_hist = deque(maxlen=10)
-        
-        self.throttle_hist = deque(maxlen=10)
-        self._prev_distance = float("inf")
-        self.distance_covered = 0
-        self._start_position = None
         self.eval_mode = False
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        self.distance_covered = 0
-        self._prev_distance = info.get("distance_to_goal", float("inf"))
-        self._start_position = info.get("pos", None)
         self.curiosity_memory.clear()
         return obs, info
 
@@ -72,7 +62,7 @@ class HabitatRewardWrapper(gym.Wrapper):
         reward = -1.0
 
         # Proximity penalty: smoothly escalate as agent nears obstacles
-        proximity = float(obs["imu"][-1])
+        proximity = float(obs["imu"][-2])
         if proximity >= 0:
             reward -= math.exp(-proximity)
 
@@ -81,17 +71,13 @@ class HabitatRewardWrapper(gym.Wrapper):
         has_goal = not goal_masked
         mean_throttle = float(np.mean(self.unwrapped._throttle_history))
         curiosity_bonus = self._compute_episodic_curiosity(obs["pixels"])
-        # if not has_goal:
-        reward -= curiosity_bonus
-        # print(curiosity_bonus)
+        if not has_goal:
+            # Exploration: curiosity bonus to encourage novel states
+            reward += (1-curiosity_bonus)
+        else:
+            # Goal-directed: reward forward progress
+            reward += info["habitat_distance_to_goal_reward"]
         info["curiosity"] = curiosity_bonus
-
-        # else:
-        #     # ── Goal-directed reward ──────────────────────────────────────────
-        #     curr_distance = info["distance_to_goal"]
-        #     delta_dist = self._prev_distance - curr_distance
-        # reward += sel  # positive when getting closer
-        #     self._prev_distance = curr_distance
 
         # Small throttle penalty for standing still
 
@@ -100,10 +86,6 @@ class HabitatRewardWrapper(gym.Wrapper):
 
         # Steering penalty: discourage excessive turning / circling
         reward -= abs(action[0])
-
-        # Circularity detection: high variance in steering with low net progress
-        self.steering_hist.append(action[0])
-        self.throttle_hist.append(action[1])
 
         # Goal reached
         if info["habitat_success"] > 0.0:
@@ -124,15 +106,15 @@ class HabitatRewardWrapper(gym.Wrapper):
         self.eval_mode = enabled
 
     def _compute_episodic_curiosity(self, stacked_pixels):
-        """Episodic curiosity via nearest-neighbor cosine distance in feature space.
+        """Episodic curiosity via nearest-neighbor cosine similarity in feature space.
 
-        Stores L2-normalised features in the episodic buffer and uses a
-        vectorised matrix multiply for the NN search (no Python loop).
+        Stores L2-normalised features in the episodic buffer.
+        Novelty = 1 - max cosine similarity to any stored feature.
 
         Args:
             stacked_pixels: (3 * per_frame_dim,) concatenated per-frame features.
         Returns:
-            float: cosine distance (0-2 range, higher = more novel).
+            float: max cosine similarity (0-1 range, higher = more familiar).
         """
         # breakpoint()
         if self._per_frame_dim is None:
@@ -144,10 +126,10 @@ class HabitatRewardWrapper(gym.Wrapper):
             self.curiosity_memory.append(feat_norm.copy())
             return 0.0
 
-        # Vectorised NN search: (N, D) @ (D,) → (N,)
+        # Nearest-neighbor search: (N, D) @ (D,) → (N,)
         memory = np.array(self.curiosity_memory, dtype=np.float32)
         similarities = memory @ feat_norm
-        nn_sim = float(np.mean(similarities))
+        nn_sim = float(np.max(similarities))
         nn_sim = max(0.0, min(nn_sim, 1.0))
         self.curiosity_memory.append(feat_norm.copy())
         return nn_sim
@@ -219,21 +201,16 @@ class VideoRecorder(gym.Wrapper):
     def _get_display_frame(self, obs, info):
         try:
             raw = self.env.unwrapped.render()
-            if raw is not None:
-                if raw.ndim == 3 and raw.shape[2] == 4:
+            if raw is not None and raw.ndim == 3:
+                if raw.shape[2] == 4:
                     raw = raw[:, :, :3]
                 return raw
         except Exception:
             pass
-        # Fallback: reconstruct from observation if render() fails
-        pixels = obs.get("pixels", None) if isinstance(obs, dict) else None
-        if pixels is not None and isinstance(pixels, np.ndarray):
-            if pixels.ndim == 3 and pixels.shape[-1] in (1, 3, 4):
-                vis = (pixels[:, :, :3] * 255).astype(np.uint8)
-                h, w = vis.shape[:2]
-                vis = cv2.resize(vis, (w * 4, h * 4),
-                                 interpolation=cv2.INTER_NEAREST)
-                return vis
+        # Fallback: reconstruct from obs["image"] when render() is unavailable
+        image = obs.get("image", None) if isinstance(obs, dict) else None
+        if image is not None and isinstance(image, np.ndarray) and image.ndim == 3:
+            return image
         return None
 
     def save(self, filename: str):
@@ -241,7 +218,7 @@ class VideoRecorder(gym.Wrapper):
             return
         path = os.path.join(self.video_dir, filename)
         h, w = self._frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        fourcc = cv2.VideoWriter_fourcc(*"avc1")
         writer = cv2.VideoWriter(path, fourcc, self.fps, (w, h))
         for f in self._frames:
             writer.write(cv2.cvtColor(f, cv2.COLOR_RGB2BGR))

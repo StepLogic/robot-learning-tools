@@ -513,7 +513,7 @@ class HabitatNavEnv(gym.Env):
         # mask= False
         if self.enable_random_masking and mask_img:
             gd = -1.0
-        return np.array([self.action[0],self.action[1], ax,ay,gx,gy,mean_resultant, mean_throttle,gd,float(int(mask_img)), self._proximity], dtype=np.float32)
+        return np.array([self.action[0],self.action[1], ax,ay,gx,gy,mean_resultant, mean_throttle,gd, self._proximity, float(int(mask_img))], dtype=np.float32)
 
     # ── Observation extraction ────────────────────────────────────────────
 

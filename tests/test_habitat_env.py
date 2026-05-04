@@ -96,7 +96,7 @@ class TestHabitatRewardWrapper:
         orig_step = env_near.step
         def step_near(action):
             obs, _, _, _, info = orig_step(action)
-            obs["imu"][-1] = 0.1
+            obs["imu"][-2] = 0.1
             return obs, 0.0, False, False, info
         env_near.step = step_near
 
@@ -112,7 +112,7 @@ class TestHabitatRewardWrapper:
         orig_step_far = env_far.step
         def step_far(action):
             obs, _, _, _, info = orig_step_far(action)
-            obs["imu"][-1] = 5.0
+            obs["imu"][-2] = 5.0
             return obs, 0.0, False, False, info
         env_far.step = step_far
 
@@ -157,7 +157,7 @@ class TestHabitatNavEnv:
         obs, info = env.reset()
         assert obs["image"].shape == (120, 160, 3)
         assert obs["imu"].shape == (11,)
-        assert obs["imu"][-1] >= -1.0, "proximity should be >= -1.0"
+        assert obs["imu"][-2] >= -1.0, "proximity should be >= -1.0"
         assert "goal_image" in info
         assert "actual_vel" in info, "actual_vel key missing from info"
         env.close()
@@ -175,5 +175,5 @@ class TestHabitatNavEnv:
         assert "actual_vel" in info, "actual_vel key missing from info"
         assert isinstance(info["actual_vel"], float)
         assert obs["imu"].shape == (11,), "IMU shape should be (11,) after step"
-        assert obs["imu"][-1] >= -1.0, "proximity should be >= -1.0 after step"
+        assert obs["imu"][-2] >= -1.0, "proximity should be >= -1.0 after step"
         env.close()
