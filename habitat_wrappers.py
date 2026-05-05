@@ -85,7 +85,7 @@ class HabitatRewardWrapper(gym.Wrapper):
             reward -= 1.0
 
         # Steering penalty: discourage excessive turning / circling
-        reward -= abs(action[0])
+        # reward -= abs(action[0])
 
         # Goal reached
         if info["habitat_success"] > 0.0:
