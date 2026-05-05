@@ -84,7 +84,7 @@ from wrappers import (
 )
 from habitat_wrappers import HabitatRewardWrapper
 
-POLICY_FOLDER = "robot_policy"
+POLICY_FOLDER = "robot_policy_2"
 def _find_latest_checkpoint(folder):
     """Find the latest checkpoint in a folder, return (path, step) or (None, 0)."""
     if not os.path.isdir(folder):
