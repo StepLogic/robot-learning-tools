@@ -117,7 +117,7 @@ class TrainConfig:
     debug_render = False
     headless = True
     goal_distance_scale = 3.0
-    goal_max_distance = 10.0
+    goal_max_distance = 20.0
     randomize_scenes = True
     held_out_scenes = ["Airport", "Skokloster-castle", "van-gogh-room"]
     replay_buffer_size = int(1e6)
@@ -163,7 +163,7 @@ print(f"[Scenes] Training on {len(scene_paths)} scenes"
 env = HabitatNavEnv(habitat_cfg, render_mode="rgb_array")
 env = StackingWrapper(env, num_stack=3, image_format="rgb")
 
-env = VideoRecorder(env, video_dir="test_videos")
+env = VideoRecorder(env, video_dir="habitat-videos")
 
 # # Shared MobileNetV3 encoder for current obs and goal
 shared_encoder = MobileNetV3Encoder(

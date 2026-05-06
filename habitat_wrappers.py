@@ -218,7 +218,7 @@ class VideoRecorder(gym.Wrapper):
             return
         path = os.path.join(self.video_dir, filename)
         h, w = self._frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*"avc1")
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(path, fourcc, self.fps, (w, h))
         for f in self._frames:
             writer.write(cv2.cvtColor(f, cv2.COLOR_RGB2BGR))
