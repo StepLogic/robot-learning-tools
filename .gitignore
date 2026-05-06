@@ -20,3 +20,4 @@ data/*
 topomap/*
 __pycache__/*
 pretrained_policy/*
+.claude/*
